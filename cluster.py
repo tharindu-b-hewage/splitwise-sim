@@ -6,6 +6,7 @@ from itertools import count
 from hydra.utils import instantiate
 
 import hardware_repo
+from processor import ProcessorType
 
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from server import Server
@@ -80,6 +81,52 @@ class Cluster:
         schedule_event(time_interval,
                        lambda self=self, power=self.total_power: \
                            self.power_telemetry(0))
+
+    def task_logs(self):
+        task_logs = []
+        # self.servers is a dictionary of lists of servers. We need to iterate over the lists.
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                task_logs.append((server.server_id, [{
+                    "tasks_total": cpu.total_task_count_log,
+                    "tasks_oversubscribed": cpu.oversubscribed_task_count_log,
+                    "T_ts": cpu.temp_T_ts,
+                    "tasks_count": cpu.temp_running_tasks
+                }]))
+        return task_logs
+
+    def sleep_mgt_logs(self):
+        slp_mgt_logs = []
+        # self.servers is a dictionary of lists of servers. We need to iterate over the lists.
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                slp_mgt_logs.append((server.server_id, cpu.sleep_manager_logs))
+        return slp_mgt_logs
+
+    def cpu_core_usage(self):
+        """
+        Returns the CPU core usage of the cluster.
+        """
+        servers = []
+        # self.servers is a dictionary of lists of servers. We need to iterate over the lists.
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                cpu.trigger_state_update()
+                servers.append((server.server_id, cpu.core_activity_log))
+        return servers
+
+    def trigger_state_update(self):
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                cpu.trigger_state_update()
 
     def run(self):
         """

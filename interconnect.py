@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 from flow import Flow
+from instance import CpuTaskType, LINUX_RR_PROCESS_TIMESLICE
 from processor import CPU, GPU
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from server import Server
@@ -104,6 +105,13 @@ class Link():
         flow.executor.finish_flow(flow, self)
         if flow.notify:
             flow.src.notify_flow_completion(flow)
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        instance = flow.src
+        c_id, overhead, age_scaling =instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.FLOW_COMPLETION)
+        runtime = LINUX_RR_PROCESS_TIMESLICE * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: instance.cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         self.bandwidth_used -= (self.bandwidth - self.bandwidth_used)
         if len(self.pending_queue) > 0 and len(self.executing_queue) < self.max_flows:
             next_flow = self.pending_queue[0]

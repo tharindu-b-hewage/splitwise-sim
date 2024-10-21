@@ -1,0 +1,4 @@
+_target_: processor.CPU
+name: dual-xeon-platinum-8480c
+memory_size: 0
+core_count: 80

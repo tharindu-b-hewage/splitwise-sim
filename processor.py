@@ -1,11 +1,97 @@
-import logging
+import csv
+import math
 import os
-
+import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from instance import Instance
-from simulator import clock, schedule_event, cancel_event, reschedule_event
+from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, APPROX_INFINITY_S, \
+    calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL, \
+    calc_long_term_vth_shift, gen_init_fq
+from core_residency import task_schedule_linux
+from instance import Instance, CpuTaskType
+from simulator import clock
+
+
+CORE_IS_FREE = ''
+ENABLE_DEBUG_LOGS = False
+
+CPU_CONFIGS = None
+
+
+class Core:
+    """A core in the cpu"""
+    MAX_FQ = 0.0
+
+    # init for all params.
+    def __init__(self, processor_id: uuid, id: int, f_init: float = 2.25 * math.pow(10, 9), temp_init=54):
+        # keep track of max frequency for normalization purpose.
+        if Core.MAX_FQ < f_init:
+            Core.MAX_FQ = f_init
+
+        self.id = id
+        self.processor_id = processor_id
+        self.task = None
+        self.c_state = CStates.C1.value
+        self.last_idle_durations = []
+        self.last_idle_set_time = 0.0
+        self.temp = temp_init
+        self.freq = f_init
+        self.freq_0 = f_init
+        self.last_state_change_time = 0.0
+        self.vth_shift = 0.0
+        self.cum_aged_time = 0.0
+        self.freq_nominal = 2.25 * math.pow(10, 9)  # AMD EPCY 7742 base frequency is 2.25 GHz
+        self.forced_to_sleep = False
+        self.last_temp_update = 0.0
+
+    def set_temp(self, new_temp):
+        clk = clock()
+
+        # update aging effects.
+        prev_period_tmp = self.temp
+        was_sleep = self.forced_to_sleep
+        prev_period_length = clk - self.last_temp_update
+
+        if was_sleep:
+            self.vth_shift = self.vth_shift
+        else:
+            self.vth_shift = calc_long_term_vth_shift(vth_old=self.vth_shift, t_temp=prev_period_tmp,
+                                                      t_length=prev_period_length)
+        self.cum_aged_time += prev_period_length
+        fq_new = calc_aged_freq(initial_freq=self.freq_0, cum_delta_vth=self.vth_shift)
+        self.freq = fq_new
+
+        # set new core temperature.
+        self.temp = new_temp
+        self.last_temp_update = clk
+
+    def __str__(self):
+        return (
+            f"Core(id={self.id}, "
+            f"task={self.task}, "
+            f"c_state={self.c_state}, "
+            f"last_idle_durations={self.last_idle_durations}, "
+            f"last_idle_set_time={self.last_idle_set_time})"
+        )
+
+    def get_record(self):
+        return {
+            'id': self.id,
+            'task': self.task,
+            'c_state': self.c_state.state,
+            'last_idle_durations': self.last_idle_durations,
+            'last_idle_set_time': self.last_idle_set_time,
+            'temp_c': self.temp,
+            'freq': self.freq,
+            'health': self.get_health(),
+            'cum_aged_time': self.cum_aged_time,
+            'cum_vth_delta': self.vth_shift,
+        }
+
+    def get_health(self):
+        # return self.freq / self.freq_0
+        return self.freq / Core.MAX_FQ
 
 
 class ProcessorType(IntEnum):
@@ -85,7 +171,7 @@ class Processor():
                 csv_entry.append(len(instance.pending_queue))
                 f.write(",".join(map(str, csv_entry)) + "\n")
             # raise OOM error
-            #raise ValueError("OOM")
+            # raise ValueError("OOM")
         self._memory_used = memory_used
 
     @property
@@ -109,9 +195,373 @@ class Processor():
         pass
 
 
+def task_schedule_least_aged(cpu_cores):
+    """Zhao et al. 2023:
+    Proposes a task scheduling approach that can be enforced at the resource management level.
+    We employ it at the cloud orchestration level. The idea behind the approach is, 'the OS can migrate and
+     swap affinitized threads from one core that has significantly aged or thermally loaded to another core'. It requires
+     aging of the core and move the tasks, which essentially signals to balance the load across the cores according
+     to the age status. Since inference tasks are short-lived, we do not migrate tasks, but at the task-to-core allocation
+     level, we select the cores to balance the load according to the health.
+     """
+    selected_core = None
+    for core in cpu_cores:
+        if core.task is not None:  # avoid already allocated cores.
+            continue
+
+        if selected_core is None:  # if a core has not chosen yet, select the first core.
+            selected_core = core
+            continue
+
+        # select the core with the highest health.
+        selected_core_health = selected_core.get_health()
+        core_health = core.get_health()
+        if core_health > selected_core_health:
+            selected_core = core
+
+    # if none, pick the first free core.
+    if selected_core is None:
+        for core in cpu_cores:
+            if core.task is None:
+                selected_core = core
+                break
+
+    return selected_core
+
+
+def task_schedule_proposed(cpu_cores):
+    selected_core = None
+    selected_idle_score = 0.0
+    for core in cpu_cores:
+        if core.task is not None:  # avoid already busy cores.
+            continue
+
+        idle_score = sum(core.last_idle_durations)  # tap into the idle subsystem to even-out core usage
+        if selected_core is None or idle_score > selected_idle_score:
+            selected_core = core
+            selected_idle_score = idle_score
+
+    # if none, pick the first free core.
+    if selected_core is None:
+        for core in cpu_cores:
+            if core.task is None:
+                selected_core = core
+                break
+
+    return selected_core
+
+
 @dataclass(kw_only=True)
 class CPU(Processor):
     processor_type: ProcessorType = ProcessorType.CPU
+    core_count: int
+    cpu_idx: int = 0
+
+    def __post_init__(self):
+
+        self.id = uuid.uuid4()
+        self.cpu_cores = None  # init later. check 'init_fqs' method.
+        self.core_activity_log = []
+        self.oversubscribed_task_count_log = 0
+        self.total_task_count_log = 0
+
+        self.temp_T_ts = []
+        self.temp_running_tasks = []
+        self.temp_running_tasks_counter = 0
+
+        # manage core sleeping.
+        self.core_oversubscribe_tasks = {
+            "past_e_t": [],
+            "core_oversubscribe_tasks": 0,
+            "last_core_adjust_time": 0.0,
+            "core_adjust_dt": CPU_CORE_ADJ_INTERVAL,
+            "err_integral": 0.0,
+            "prev_error": 0.0,
+        }
+
+        self.sleep_manager_logs = []
+
+    def init_fqs(self, server_id):
+        process_variation_induced_initial_core_fq = self.get_pv_induced_fqs(server_id)
+        # initial temperature is 54 degrees celcius. Data modelled after experiments from Green Core testbed.
+        self.cpu_cores = [Core(processor_id=self.id, id=idx, f_init=init_fq, temp_init=Temperatures.C0_POLL.value) for
+                          idx, init_fq in
+                          enumerate(process_variation_induced_initial_core_fq)]
+
+    def get_pv_induced_fqs(self, server_id):
+        def load_or_generate_frequencies(file_path, server_id, n_cores):
+            if not os.path.exists(file_path):
+                with open(file_path, 'w', newline='', encoding='UTF-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["server_id", "core_frequencies"])  # Write header
+                generated_frequencies = gen_init_fq(n_cores=n_cores)
+                with open(file_path, 'a', newline='', encoding='UTF-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerow([server_id, ','.join(map(str, generated_frequencies))])
+                return generated_frequencies
+
+            with open(file_path, 'r', newline='', encoding='UTF-8') as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    if row["server_id"] == str(server_id):
+                        return list(map(float, row["core_frequencies"].split(',')))
+
+            generated_frequencies = gen_init_fq(n_cores=n_cores)
+            with open(file_path, 'a', newline='', encoding='UTF-8') as file:
+                writer = csv.writer(file)
+                writer.writerow([server_id, ','.join(map(str, generated_frequencies))])
+            return generated_frequencies
+
+        absolute_directory = os.path.dirname(os.path.abspath(__file__))
+        frequency_file_path = os.path.join(absolute_directory, 'cpu_core_frequencies.csv')
+        process_variation_induced_initial_core_fq = load_or_generate_frequencies(frequency_file_path, server_id,
+                                                                                 self.core_count)
+        return process_variation_induced_initial_core_fq
+
+    def assign_core_to_cpu_task(self, task, override_task_description=None):
+        # total running tasks
+        self.temp_running_tasks_counter += 1
+
+        # gpu memory usage
+        mem_used = 0.0
+        mem_total = 0.0
+        for p in self.server.processors:
+            if p == self:
+                continue
+            mem_used += p.memory_used
+            mem_total += p.memory_size
+        mem_util = mem_used / mem_total
+
+        # core sleep management
+        awaken_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
+
+        # log entry
+        self.temp_running_tasks.append([clock(), self.temp_running_tasks_counter, mem_util, awaken_cores])
+
+        self.total_task_count_log += 1
+
+        # assign logic
+        assigned_core, time_to_wake = self.get_a_core_to_assign()
+        if assigned_core is None:
+            self.oversubscribed_task_count_log += 1
+            self.core_oversubscribe_tasks['core_oversubscribe_tasks'] = self.core_oversubscribe_tasks[
+                                                                            'core_oversubscribe_tasks'] + 1
+            return -1, 0.0, 1  # there was no free core to assign. Task is assumed to be oversubscribing cpu.
+
+
+        # set the core to serve
+        assigned_core.task = task.value["info"]
+        if override_task_description is not None:
+            assigned_core.task = override_task_description
+        assigned_core.c_state = CStates.C0.value  # set core to busy
+        assigned_core.set_temp(new_temp=Temperatures.C0_RTEVAL.value)
+        assigned_core.last_idle_durations.append(clock() - assigned_core.last_idle_set_time)
+        assigned_core.last_idle_set_time = None
+
+        # maintain a list of last 8 idle durations
+        if len(assigned_core.last_idle_durations) == 9:
+            assigned_core.last_idle_durations.pop(0)
+
+        age_induced_freq_scaling_factor = assigned_core.freq / assigned_core.freq_nominal
+
+        self.log_cpu_state(core=assigned_core, time_to_wake=time_to_wake)
+        return assigned_core.id, time_to_wake, age_induced_freq_scaling_factor
+
+    def release_core_from_cpu_task(self, task_core_id):
+        self.temp_running_tasks_counter -= 1
+
+        if task_core_id == -1:
+            self.core_oversubscribe_tasks['core_oversubscribe_tasks'] = self.core_oversubscribe_tasks[
+                                                                            'core_oversubscribe_tasks'] - 1
+            return
+
+        # free the core
+        core = list(filter(lambda c: c.id == task_core_id, self.cpu_cores))[0]
+        self.free(core)
+
+    def free(self, core):
+        core.task = None
+        core.c_state = CStates.C1.value  # set core to idle
+        # update core idle state
+        next_c_state = get_c_state_from_idle_governor(last_8_idle_durations_s=core.last_idle_durations,
+                                                      latency_limit_core_wake_s=APPROX_INFINITY_S)
+        core.c_state = next_c_state
+        core.set_temp(new_temp=next_c_state.temp.value)
+        core.last_idle_set_time = clock()
+        self.log_cpu_state(core=core, time_to_wake=None)
+
+    def adjust_sleeping_cores(self):
+
+        # cores
+        N = len(self.cpu_cores)
+
+        active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
+        C_SLP_t = N - active_cores
+
+        # tasks
+        oversub_tasks = self.core_oversubscribe_tasks["core_oversubscribe_tasks"]
+        normal_tasks = len(list(filter(lambda c: c.task is not None and not c.forced_to_sleep, self.cpu_cores)))
+        T_t = normal_tasks + oversub_tasks
+        self.temp_T_ts.append(T_t)
+
+        # assumed in llm inference servers number of available cores are excessive.
+        # this is an algorithmic estimation, not
+        # a part of the system model.
+        # algorithm performs online optimization based on this assumption.
+        T_t = min(N, T_t)
+
+        # error signal
+        e_t = N - C_SLP_t - T_t
+
+        e_t_prd = e_t
+
+        # normalize
+        e_t_prd = e_t_prd / N
+
+        # apply reaction function
+        F_e_t_prd = e_t_prd
+        if e_t_prd >= 0:
+            F_e_t_prd = math.tan(0.785 * e_t_prd)
+        else:
+            F_e_t_prd = math.atan(1.55 * e_t_prd)
+
+        # scale up
+        e_t_corr = N * F_e_t_prd
+
+        # final error signal
+        e_t_corr = int(e_t_corr)
+
+        # put cores to sleep
+        delta_cores = abs(e_t_corr)
+        if e_t_corr > 0:
+            self.put_to_sleep(to_sleep=delta_cores, cores=self.cpu_cores)
+        elif e_t_corr < 0:
+            self.put_to_wake(to_wake=delta_cores, cores=self.cpu_cores)
+
+        self.sleep_manager_logs.append({
+            'clock': clock(),
+            'oversub_tasks': oversub_tasks,
+            'normal_tasks': normal_tasks,
+            'T_t': T_t,
+            'active_cores': active_cores,
+            'asleep_cores': len(self.cpu_cores) - active_cores,
+        })
+
+    def get_a_core_to_assign(self):
+
+        """Algorithm assigning a core to a task"""
+        import configparser
+
+        def load_properties(file_path):
+            config = configparser.ConfigParser()
+            # ConfigParser requires section headers, so we add a fake one
+            absolute_directory = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(absolute_directory, file_path), 'r') as file:
+                properties_data = f"[DEFAULT]\n{file.read()}"
+            config.read_string(properties_data)
+            return config['DEFAULT']
+
+        global CPU_CONFIGS
+        if CPU_CONFIGS is None:
+            CPU_CONFIGS = load_properties('cpu_configs.properties')
+
+        # omit allocating sleeping cores.
+        awaken_cores = list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores))
+
+        task_allocation_algo = CPU_CONFIGS.get("task_allocation_algo")
+        if task_allocation_algo == "linux":
+            assigned_core = task_schedule_linux(cpu_cores=awaken_cores)
+        elif task_allocation_algo == "least-aged":
+            assigned_core = task_schedule_least-aged(cpu_cores=awaken_cores)
+        elif task_allocation_algo == "proposed":
+            assigned_core = task_schedule_proposed(cpu_cores=awaken_cores)
+        else:
+            raise ValueError(f"Unknown task allocation algorithm: {task_allocation_algo}")
+
+        if assigned_core is None:
+            return None, None
+
+        transition_latency = assigned_core.c_state.transition_time_s
+        assigned_core.c_state = CStates.C1.value  # set core to idle
+        return assigned_core, transition_latency
+
+    def trigger_state_update(self):
+        """update states at the end of the simulation"""
+        '''
+        Releasing a task from the core updates multiple stats, such as aging. In the simulation, core status is 
+        only updated either a task is assigned or released. However, in cases such as a task was never assigned,
+        or the time between task release and end of the simulation, we need to still update stats, such as the 
+        aging occur due to idle temperature. So we assign a completion task and release the core.
+        '''
+        for _ in self.cpu_cores:
+            self.assign_core_to_cpu_task(task=CpuTaskType.SIM_STATUS_UPDATE_TASK)  # assign to next free core.
+        for core in self.cpu_cores:
+            self.release_core_from_cpu_task(core.id)  # release from each core.
+
+    def log_cpu_state(self, core=None, time_to_wake=None):
+        if core is None:
+            for core in self.cpu_cores:
+                self.core_activity_log.append({
+                    'clock': clock(),
+                    'id': core.id,
+                    'task': core.task,
+                    'c-state': core.c_state.state,
+                    'power': calculate_core_power(c_state=core.c_state, model=core.task),
+                    'temp': core.temp,
+                    'freq': core.freq,
+                })
+
+        core_state = core.get_record()
+        core_state['clock'] = clock()
+        core_state['c_state_wake_latency'] = time_to_wake
+        self.core_activity_log.append(core_state)
+
+    def put_to_sleep(self, to_sleep, cores):
+        """
+        Amongst awaken cores, filter free cores. Then sleep the amount of cores having the lowest health.
+        """
+        free_awake_cores = list(filter(lambda c: c.task is None and not c.forced_to_sleep, cores))
+
+        # health is calculated as the current degraded frequency over the nominal frequency.
+        free_awake_cores = sorted(free_awake_cores, key=lambda c: c.get_health())  # health low to high.
+        sleep_count = 0
+        for idx in range(len(free_awake_cores)):
+            core = free_awake_cores[idx]
+            # self.update_aging(core)
+            self.force_sleep(core)
+            self.log_cpu_state(core=core, time_to_wake=None)
+            sleep_count += 1
+            if sleep_count >= to_sleep:
+                break
+
+    def put_to_wake(self, to_wake, cores):
+        """
+        Amongst awaken cores, filter free cores. Then sleep the amount of cores having the lowest health.
+        """
+        asleep_cores = list(filter(lambda c: c.forced_to_sleep, cores))
+
+        # health is calculated as the current degraded frequency over the nominal frequency.
+        asleep_cores = sorted(asleep_cores, key=lambda c: c.get_health(), reverse=True)  # health low to high.
+        wake_count = 0
+        for idx in range(len(asleep_cores)):
+            core = asleep_cores[idx]
+            # self.update_aging(core)
+            self.force_wake(core)
+            self.log_cpu_state(core=core, time_to_wake=None)
+            wake_count += 1
+            if wake_count >= to_wake:
+                break
+
+    def force_sleep(self, core):
+        core.set_temp(new_temp=Temperatures.C6.value)  # needs to be at top.
+        core.forced_to_sleep = True
+        core.task = None
+        core.c_state = CStates.C6.value
+
+    def force_wake(self, core):
+        core.set_temp(new_temp=Temperatures.C0_POLL.value)  # needs to be at top.
+        core.forced_to_sleep = False
+        core.c_state = CStates.C1.value
 
 
 @dataclass(kw_only=True)

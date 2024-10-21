@@ -1,0 +1,9 @@
+_target_: server.Server
+name: dgx-h100
+tdp: 10200
+processors:
+  - name: h100-80gb
+    count: 8
+  - name: dual-xeon-platinum-8480c-40
+    count: 1
+interconnects: {}

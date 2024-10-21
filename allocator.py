@@ -51,10 +51,16 @@ class Allocator(ABC):
         model = model_repo.get_model(model_architecture=model_architecture,
                                      model_size=model_size,
                                      model_parallelism=parallelism)
+
+        # instances inherit the name of the GPU processor
+        instance_name = None
+        for processor in processors:
+            if processor.processor_type.value == 2:
+                instance_name = processor.name
         instance = Instance.from_config(instance_cfg=instance_cfg,
                                         instance_id=next(self.total_instances),
                                         application=self.application,
-                                        name=processors[0].name,
+                                        name=instance_name,
                                         tag=tag,
                                         model=model,
                                         processors=processors,

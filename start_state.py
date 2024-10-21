@@ -4,6 +4,9 @@ Utility functions to initialize the Cluster with a starting state.
 
 import logging
 
+from joblib.externals.cloudpickle import instance
+from pandas.core.computation.expressions import where
+
 from model import ModelParallelism
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 
@@ -70,16 +73,25 @@ def splitwise(start_state_cfg, cluster, applications, **kwargs):
         # allocate n_prompt instance of prompt
         all_servers = [server for sku_name in servers for server in servers[sku_name]]
         for server in all_servers[:n_prompts]:
-            for proc_id in range(0, len(server.processors), prompt_parallelism.tensor_parallelism):
+            gpus = [processor for processor in server.processors if processor.processor_type.value == 2]
+            cpus = [processor for processor in server.processors if processor.processor_type.value == 1]
+            for proc_id in range(0, len(gpus), prompt_parallelism.tensor_parallelism):
+                # allocate instance processors
+                instance_processors = get_instance_processors(proc_id, proc_id+prompt_parallelism.tensor_parallelism,
+                                                              cpus, gpus)
                 allocator.start_spin_up_instance(instance_cfg=prompt_cfg,
-                                                 processors=server.processors[proc_id:proc_id+prompt_parallelism.tensor_parallelism],
+                                                 processors=instance_processors,
                                                  parallelism=prompt_parallelism,
                                                  pre_start=True,
                                                  tag="prompt")
         for server in all_servers[n_prompts:n_prompts+n_tokens]:
-            for proc_id in range(0, len(server.processors), token_parallelism.tensor_parallelism):
+            gpus = [processor for processor in server.processors if processor.processor_type.value == 2]
+            cpus = [processor for processor in server.processors if processor.processor_type.value == 1]
+            for proc_id in range(0, len(gpus), token_parallelism.tensor_parallelism):
+                instance_processors = get_instance_processors(proc_id, proc_id+token_parallelism.tensor_parallelism,
+                                                              cpus, gpus)
                 allocator.start_spin_up_instance(instance_cfg=token_cfg,
-                                                 processors=server.processors[proc_id:proc_id+token_parallelism.tensor_parallelism],
+                                                 processors=instance_processors,
                                                  parallelism=token_parallelism,
                                                  pre_start=True,
                                                  tag="token")
@@ -89,21 +101,34 @@ def splitwise(start_state_cfg, cluster, applications, **kwargs):
         token_instances = token_cfg.instance_names
         for sku_name in servers:
             for server in servers[sku_name]:
+                gpus = [processor for processor in server.processors if processor.processor_type.value == 2]
+                cpus = [processor for processor in server.processors if processor.processor_type.value == 1]
                 if sku_name in prompt_instances:
                     # allocate as many prompt instances as possible
-                    for proc_id in range(0, len(server.processors), prompt_parallelism.tensor_parallelism):
+                    for proc_id in range(0, len(gpus), prompt_parallelism.tensor_parallelism):
+                        instance_processors = get_instance_processors(proc_id,
+                                                                      proc_id + prompt_parallelism.tensor_parallelism,
+                                                                      cpus, gpus)
                         allocator.start_spin_up_instance(instance_cfg=prompt_cfg,
-                                                         processors=server.processors[proc_id:proc_id+prompt_parallelism.tensor_parallelism],
+                                                         processors=instance_processors,
                                                          parallelism=prompt_parallelism,
                                                          pre_start=True,
                                                          tag="prompt")
                 elif sku_name in token_instances:
                     # allocate as many token instances as possible
-                    for proc_id in range(0, len(server.processors), token_parallelism.tensor_parallelism):
+                    for proc_id in range(0, len(gpus), token_parallelism.tensor_parallelism):
+                        instance_processors = get_instance_processors(proc_id,
+                                                                      proc_id + token_parallelism.tensor_parallelism,
+                                                                      cpus, gpus)
                         allocator.start_spin_up_instance(instance_cfg=token_cfg,
-                                                         processors=server.processors[proc_id:proc_id+token_parallelism.tensor_parallelism],
+                                                         processors=instance_processors,
                                                          parallelism=token_parallelism,
                                                          pre_start=True,
                                                          tag="token")
                 else:
                     raise ValueError(f"Unsupported sku_name: {sku_name}")
+
+
+def get_instance_processors(gpu_start_idx, gpu_end_idx, cpus, gpus):
+    instance_processors = cpus + gpus[gpu_start_idx:gpu_start_idx + gpu_end_idx]
+    return instance_processors

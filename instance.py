@@ -10,6 +10,7 @@ import utils
 from metrics import InstanceMetrics
 from node import NodeState
 from performance_model import get_duration, get_iteration_duration
+#from processor import CPU
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from task import PromptTask, TokenTask
 
@@ -25,6 +26,9 @@ class Instance():
     NOTE: uses a FIFO task queue, not priority queue
     NOTE: preemptions, batching, etc. implemented in subclasses
     """
+
+    cpu = None
+
     def __init__(self,
                  instance_id,
                  application,
@@ -56,7 +60,9 @@ class Instance():
         self.memory = self.model.size.total_size
         self.memory_allocs = defaultdict(int)
         self.memory_allocs["model"] = self.model.size.total_size
-        self.max_memory = self.processors[0].memory_size * len(self.processors)
+
+        gpus = [p for p in self.processors if p.processor_type.value == 2]
+        self.max_memory = gpus[0].memory_size * len(gpus)
 
         ## task queues
         self.pending_queue = []
@@ -76,6 +82,9 @@ class Instance():
             os.makedirs(os.path.dirname(logger_name), exist_ok=True)
             self.scheduler_logger = utils.file_logger(logger_name, level)
 
+        ## set cpu
+        self.cpu = list(filter(lambda p: p.processor_type.value == 1, self.processors))[0]
+
     @property
     def model(self):
         return self._model
@@ -92,6 +101,9 @@ class Instance():
     def memory(self, memory):
         self._memory = memory
         for processor in self.processors:
+            if processor.processor_type.value == 1:
+                # TODO: we omit CPU memory for now.
+                continue
             processor.memory_used = memory / len(self.processors)
 
     def alloc_memory(self, tag, memory):
@@ -100,6 +112,12 @@ class Instance():
         """
         self.memory += memory
         self.memory_allocs[tag] += memory
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        instance = self
+        c_id, overhead, age_scaling =instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.INSTANCE_MEM_ALLOC)
+        runtime = CpuTaskType.INSTANCE_MEM_ALLOC.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: instance.cpu.release_core_from_cpu_task(task_core_id=c_id))
 
     def free_memory(self, tag, memory):
         """
@@ -111,20 +129,31 @@ class Instance():
         if self.memory_allocs[tag] == 0:
             del self.memory_allocs[tag]
 
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        instance = self
+        c_id, overhead, age_scaling =instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.INSTANCE_MEM_FREE)
+        runtime = CpuTaskType.INSTANCE_MEM_FREE.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: instance.cpu.release_core_from_cpu_task(task_core_id=c_id))
+
     def task_arrival(self, task):
         """
         Task arrives at this Instance.
         """
+        # todo: core assignment is not implemented here, as we only simulate with SpliwiseInstance. If to use this class,
+        # core assignment should be implemented.
         task.instance = self
         task.arrive()
         self.pending_queue.append(task)
         if len(self.pending_queue) == 1 and len(self.batch) == 0:
             self.run_task(task)
 
-    def task_completion(self, task):
+
+    def task_completion(self, task, core_id=None):
         """
         Task completes at this Instance.
         """
+        # todo: core assignment is not implemented here, as we only simulate with SpliwiseInstance. If to use this class,
+        # core assignment should be implemented.
         task.complete()
         self.metrics.busy_time += clock() - self.metrics.run_timestamp
         self.metrics.run_timestamp = 0.
@@ -160,7 +189,13 @@ class Instance():
                                      batch=[task],
                                      instance=self)
         schedule_event(self.overheads.run + task.duration,
-                       lambda instance=self,task=task: instance.task_completion(task))
+                       lambda instance=self, task=task: instance.task_completion(task))
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        instance = self
+        c_id, overhead, age_scaling =instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.RUN_TASK)
+        runtime = task.duration * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: instance.cpu.release_core_from_cpu_task(task_core_id=c_id))
 
     def preempt_task(self, task):
         """
@@ -317,6 +352,8 @@ class ORCAInstance(Instance):
         else:
             raise ValueError(f"Unexpected task type {task.task_type} in add_pending_task")
 
+        # cpu modelling is done at the caller level.
+
     def remove_pending_task(self, task):
         """
         Remove a Task from the pending queue.
@@ -332,6 +369,8 @@ class ORCAInstance(Instance):
         else:
             raise ValueError(f"Unexpected task type {task.task_type} in remove_pending_task")
 
+        # cpu modelling is done at the caller level.
+
     def add_to_pool(self, task):
         """
         Add a Task to the request pool.
@@ -344,6 +383,8 @@ class ORCAInstance(Instance):
         else:
             self.request_tasks[task.request].append(task)
 
+        # cpu modelling is done at the caller level.
+
     def remove_from_pool(self, task):
         """
         Remove a Task from the request pool.
@@ -353,7 +394,11 @@ class ORCAInstance(Instance):
             self.pending_requests.remove(task.request)
             del self.request_tasks[task.request]
 
+        # cpu modelling is done at the caller level.
+
     def task_arrival(self, task):
+        # todo: core assignment is not implemented here, as we only simulate with SpliwiseInstance. If to use this class,
+        # core assignment should be implemented.
         task.instance = self
         task.arrive()
 
@@ -458,16 +503,20 @@ class ORCAInstance(Instance):
         """
         Start a new iteration of a batch of tasks.
         """
+        # subtasks: 1
         # select a new batch of tasks to run
         preempted_tasks, new_tasks = self.select_batch()
 
+        # subtasks: 2
         for task in preempted_tasks:
             self.preempt_task(task)
 
+        # subtasks: 3
         for task in new_tasks:
             self.remove_pending_task(task)
             self.add_to_batch(task)
 
+        # subtasks: 4
         for request in self.pending_requests:
             task = self.request_tasks[request][0]
             if task not in self.batch:
@@ -490,6 +539,7 @@ class ORCAInstance(Instance):
                 self.application.scheduler.notify_free_instance(self)
             return
 
+        # subtasks: 5
         # estimate duration of a single iteration
         self.iteration_duration = get_iteration_duration(batch=self.batch,
                                                          instance=self)
@@ -515,8 +565,14 @@ class ORCAInstance(Instance):
                 raise ValueError(f"Unexpected task state {task.state} in start_iteration")
 
         self.completion_events["iteration"] = schedule_event(
-                        self.iteration_duration * self.num_contiguous_iterations,
-                        lambda instance=self: instance.complete_iteration())
+            self.iteration_duration * self.num_contiguous_iterations,
+            lambda instance=self: instance.complete_iteration())
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        instance = self
+        c_id, overhead, age_scaling =instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.INFERENCE_ITERATION)
+        runtime = (self.iteration_duration * self.num_contiguous_iterations) + LINUX_RR_PROCESS_TIMESLICE * 5 * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: instance.cpu.release_core_from_cpu_task(task_core_id=c_id))
 
     def pause_iteration(self):
         """
@@ -546,10 +602,15 @@ class ORCAInstance(Instance):
         contiguous_iteration_duration_new = self.iteration_duration * self.num_contiguous_iterations
         remaining_time = contiguous_iteration_duration_new - elapsed_time
 
+        '''simulating core allocation for the rescheduled event below
+        Following event reduces the runtime of the current iteration. It mimics that the iteration process is still 
+        executing on the original core, but the runtime is reduced due to the rescheduling of the event. Thus no need 
+        for core allocation for this event.
+        '''
         self.completion_events["iteration"] = reschedule_event(
                             self.completion_events["iteration"], remaining_time)
 
-    def complete_iteration(self):
+    def complete_iteration(self, core_id=None):
         """
         Complete an iteration of a batch tasks.
         Tasks which complete leave the batch.
@@ -573,7 +634,10 @@ class ORCAInstance(Instance):
         self.pause_next_iteration = False
         self.start_iteration()
 
-    def task_completion(self, task):
+    def release_cpu_core(self, core_id):
+        self.cpu.release_core_from_cpu_task(task_core_id=core_id)
+
+    def task_completion(self, task, core_id=None):
         """
         Task completes within a batch.
         """
@@ -583,10 +647,11 @@ class ORCAInstance(Instance):
         self.completed_queue.append(task)
         task.executor.finish_task(task, self)
 
-    def notify_flow_completion(self, flow):
+    def notify_flow_completion(self, flow, core_for_flow_completion_notify=None):
         """
         Notify instance of flow completion.
         """
+
         if len(self.pending_queue) == 0:
             return
 
@@ -604,6 +669,28 @@ class ORCAInstance(Instance):
             self.pause_iteration()
             return
 
+from enum import Enum
+
+# default overhead time is an indicative value. we use default timeslice of real-time process in linux kernel,
+# which is 100ms, assuming if none provided, task is treated as real-time process, in terms of the time slice.
+LINUX_RR_PROCESS_TIMESLICE = 0.1
+class CpuTaskType(Enum):
+    EXECUTOR_TASK = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "executor task"}
+    INSTANCE_MEM_FREE = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "instance mem free"}
+    INSTANCE_MEM_ALLOC = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "instance mem alloc"}
+    HANDLE_TASK_ARRIVAL = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "handle task arrival"}
+    INFERENCE_ITERATION = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "inference iteration"}
+    RUN_TASK = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "run task"}
+    FLOW_COMPLETION = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "flow completion"}
+    SIM_STATUS_UPDATE_TASK = {"overhead_time": 0.0, "info": "status update task for simulation"}
+
+class CpuTask:
+    task: CpuTaskType
+    meta: str
+
+    def __init__(self, task, meta):
+        self.task: CpuTaskType = task
+        self.meta = meta
 
 class SplitwiseInstance(ORCAInstance):
     """
@@ -676,14 +763,17 @@ class SplitwiseInstance(ORCAInstance):
         else:
             raise ValueError(f"Unexpected task type {task.task_type} in remove_pending_task")
 
-    def task_arrival(self, task):
+    def task_arrival(self, task, core_id_for_task_arrival_function=None):
+
         task.instance = self
         task.arrive()
 
+        # subtasks: 1
         # add task to request pool and pending queue
         self.add_to_pool(task)
         self.add_pending_task(task)
 
+        # subtasks: 2
         # if no tasks currently executing, start a new iteration
         if len(self.batch) == 0:
             # if instance is blocked due to memory constraints, do nothing

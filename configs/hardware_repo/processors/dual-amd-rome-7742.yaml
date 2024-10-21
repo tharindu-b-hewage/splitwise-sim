@@ -1,0 +1,4 @@
+_target_: processor.CPU
+name: dual-amd-rome-7742
+memory_size: 0
+core_count: 128

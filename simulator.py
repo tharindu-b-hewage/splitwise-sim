@@ -1,10 +1,15 @@
+import configparser
 import heapq
 import logging
+import os
 
 from collections import defaultdict
+from platform import processor
+
+import numpy as np
 
 import utils
-
+from core_power import CPU_CORE_ADJ_INTERVAL
 
 # global simulator that drives the simulation
 # bad practice, but it works for now
@@ -100,6 +105,7 @@ class TraceSimulator(Simulator):
         self.router = router
         self.arbiter = arbiter
         logging.info("TraceSimulator initialized")
+        self.last_request_arrival = 0.0
         self.load_trace()
 
     def load_trace(self):
@@ -107,8 +113,10 @@ class TraceSimulator(Simulator):
         Load requests from the trace as arrival events.
         """
         for request in self.trace.requests:
+            arrival_timestamp = request.arrival_timestamp
             self.schedule(request.arrival_timestamp,
                           lambda request=request: self.router.request_arrival(request))
+            self.last_request_arrival = arrival_timestamp
 
     def run(self):
         # start simulation by scheduling a cluster run
@@ -116,11 +124,34 @@ class TraceSimulator(Simulator):
         self.schedule(0, self.router.run)
         self.schedule(0, self.arbiter.run)
 
+        # add a status entry at the beginning in the cpu usage log files. this is needed to process the collected data.
+        self.cluster.trigger_state_update()
+
+        # schedule periodic monitoring in servers
+        def load_properties(file_path):
+            config = configparser.ConfigParser()
+            # ConfigParser requires section headers, so we add a fake one
+            absolute_directory = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(absolute_directory, file_path), 'r') as file:
+                properties_data = f"[DEFAULT]\n{file.read()}"
+            config.read_string(properties_data)
+            return config['DEFAULT']
+
+        CPU_CONFIGS = load_properties('cpu_configs.properties')
+        if CPU_CONFIGS.get("task_allocation_algo") == "proposed":
+            periodic_interval = 1.0
+            for interval_start in np.arange(0.0, self.last_request_arrival, periodic_interval):
+                for sku in self.cluster.servers:
+                    for server in self.cluster.servers[sku]:
+                        cpu = list(filter(lambda p: p.processor_type.value == 1, server.processors))[0]
+                        self.schedule(interval_start, lambda cpu=cpu: cpu.adjust_sleeping_cores())
+
         # run simulation
         super().run()
         self.logger.info(f"{self.time},end")
         logging.info(f"TraceSimulator completed at {self.time}")
 
+        # below also triggers a status update call, such that each cpu core logs their status at the end of the simulation.
         self.save_results()
 
     def save_results(self, detailed=True):
@@ -155,6 +186,22 @@ class TraceSimulator(Simulator):
                 utils.save_dict_as_csv(result, f"detailed/{application_id}.csv")
             for application_id, result in alloc_results.items():
                 utils.save_dict_as_csv(result, f"detailed/{application_id}_alloc.csv")
+
+        # save CPU core activity
+        server_cpu_usage = self.cluster.cpu_core_usage()
+        for index, cpu_usage in enumerate(server_cpu_usage):
+            name, usage = cpu_usage
+            utils.save_dict_as_csv(usage, f"cpu_usage/cpu_usage_{name}_{index}.csv")
+
+        task_logs = self.cluster.task_logs()
+        for index, log in enumerate(task_logs):
+            machine_name, data = log
+            utils.save_dict_as_csv(data, f"cpu_usage/task_log_{machine_name}_{index}.csv")
+
+        slp_mgt_logs = self.cluster.sleep_mgt_logs()
+        for index, log in enumerate(slp_mgt_logs):
+            machine_name, data = log
+            utils.save_dict_as_csv(data, f"cpu_usage/slp_mgt_log_{machine_name}_{index}.csv")
 
 
 # Convenience functions for simulator object
