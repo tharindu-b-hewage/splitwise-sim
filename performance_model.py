@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import pandas as pd
 
 from hydra.utils import get_original_cwd
+from joblib.externals.cloudpickle import instance
 from scipy.interpolate import interp1d
 
 from task import TaskType, PromptTask, TokenTask
@@ -214,7 +215,9 @@ class DatabasePerformanceModel(PerformanceModel):
         i.e., we currently do not support prompt chunking.
         """
         model = instance.model.name
-        hardware = instance.processors[0].name
+        # todo: currently only supports for gpus.
+        hardware = next(p for p in instance.processors if p.processor_type.value == 2).name
+        #hardware = instance.processors[0].name
         pipeline_parallel = instance.model.parallelism.pipeline_parallelism
         tensor_parallel = instance.model.parallelism.tensor_parallelism
 

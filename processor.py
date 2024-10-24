@@ -4,8 +4,12 @@ import os
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+from core_residency import gen_core_id
+from core_residency import sampler
 from instance import Instance
 from simulator import clock, schedule_event, cancel_event, reschedule_event
+
+LOGICAL_CORE_COUNT = 256
 
 
 class ProcessorType(IntEnum):
@@ -111,7 +115,36 @@ class Processor():
 
 @dataclass(kw_only=True)
 class CPU(Processor):
+    """
+    Modified to model an AMD EPYC 7742 CPU with 128 physical cores.
+
+    Attributes:
+        processor_type (ProcessorType): The type of the Processor.
+        cpu_cores (list[bool]): The logical cores of the CPU. Boolean state indicates if the core is in use.
+    """
     processor_type: ProcessorType = ProcessorType.CPU
+    cpu_cores: [False] * LOGICAL_CORE_COUNT
+    core_activity_log: []
+
+    def assign_core_to_iteration(self):
+        """Assume that each iteration requires a single logical core."""
+        allocated_cores = {index for index, core in enumerate(self.cpu_cores) if core is True}
+        core_id = gen_core_id(sampler=sampler, allocated_cores=allocated_cores, max_retries=10, range=LOGICAL_CORE_COUNT)
+        self.cpu_cores[core_id] = True
+        self.log_core_activity()
+        return core_id
+
+    def release_core_from_iteration(self, iteration_core_id):
+        self.cpu_cores[iteration_core_id] = False
+        self.log_core_activity()
+
+    def log_core_activity(self):
+        # Log core activity
+        log_entry = {"clock": clock()}
+        for i in range(LOGICAL_CORE_COUNT):
+            log_entry[f"core_{i}"] = self.cpu_cores[i]
+        # log_entry = {"clock": clock(), "core_id": core_id, "is_allocated": True, "is_released": False}
+        self.core_activity_log.append(log_entry)
 
 
 @dataclass(kw_only=True)

@@ -56,7 +56,9 @@ class Instance():
         self.memory = self.model.size.total_size
         self.memory_allocs = defaultdict(int)
         self.memory_allocs["model"] = self.model.size.total_size
-        self.max_memory = self.processors[0].memory_size * len(self.processors)
+
+        gpus = [p for p in self.processors if p.processor_type.value == 2]
+        self.max_memory = gpus[0].memory_size * len(gpus)
 
         ## task queues
         self.pending_queue = []
@@ -76,6 +78,8 @@ class Instance():
             os.makedirs(os.path.dirname(logger_name), exist_ok=True)
             self.scheduler_logger = utils.file_logger(logger_name, level)
 
+        self.iteration_core_id = None
+
     @property
     def model(self):
         return self._model
@@ -92,6 +96,9 @@ class Instance():
     def memory(self, memory):
         self._memory = memory
         for processor in self.processors:
+            if processor.processor_type.value == 1:
+                # TODO: we omit CPU memory for now.
+                continue
             processor.memory_used = memory / len(self.processors)
 
     def alloc_memory(self, tag, memory):
@@ -514,6 +521,11 @@ class ORCAInstance(Instance):
             else:
                 raise ValueError(f"Unexpected task state {task.state} in start_iteration")
 
+        # assign the cpu core that handled the iteration
+        for processor in self.processors:
+            if processor.processor_type.value == 1:
+                self.iteration_core_id = processor.assign_core_to_iteration()
+
         self.completion_events["iteration"] = schedule_event(
                         self.iteration_duration * self.num_contiguous_iterations,
                         lambda instance=self: instance.complete_iteration())
@@ -569,9 +581,18 @@ class ORCAInstance(Instance):
         for task in completed_tasks:
             self.task_completion(task)
 
+        # release the cpu core assigned to the iteration
+        self.release_cpu_core()
+
         # start next iteration
         self.pause_next_iteration = False
         self.start_iteration()
+
+    def release_cpu_core(self):
+        for processor in self.processors:
+            if processor.processor_type.value == 1:
+                processor.release_core_from_iteration(self.iteration_core_id)
+                self.iteration_core_id = None
 
     def task_completion(self, task):
         """

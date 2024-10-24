@@ -156,6 +156,11 @@ class TraceSimulator(Simulator):
             for application_id, result in alloc_results.items():
                 utils.save_dict_as_csv(result, f"detailed/{application_id}_alloc.csv")
 
+        # save CPU core activity
+        server_cpu_usage = self.cluster.cpu_core_usage()
+        for index, cpu_usage in enumerate(server_cpu_usage):
+            utils.save_dict_as_csv(cpu_usage, f"cpu_usage/cpu_usage_{index}.csv")
+
 
 # Convenience functions for simulator object
 

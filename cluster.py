@@ -6,6 +6,7 @@ from itertools import count
 from hydra.utils import instantiate
 
 import hardware_repo
+from processor import ProcessorType
 
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from server import Server
@@ -80,6 +81,19 @@ class Cluster:
         schedule_event(time_interval,
                        lambda self=self, power=self.total_power: \
                            self.power_telemetry(0))
+
+    def cpu_core_usage(self):
+        """
+        Returns the CPU core usage of the cluster.
+        """
+        servers = []
+        # self.servers is a dictionary of lists of servers. We need to iterate over the lists.
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU]
+                servers.append(cpu[0].core_activity_log)
+        return servers
 
     def run(self):
         """
