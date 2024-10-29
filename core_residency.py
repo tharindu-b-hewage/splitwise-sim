@@ -78,18 +78,27 @@ def core_id_sampler(df, bw_adjust=0.1):
         yield int(np.round(kde.resample(1)[0]))
 
 
-def gen_core_id(sampler, allocated_cores, max_retries, range):
-    """Sample core id from the observed distribution. If the sampled core is already allocated, sample again. If the number of retries exceeds max_retries, sample randomly."""
-    if len(allocated_cores) == range:
+def allocate_cores_argane_swing_dst(cores_in_use, max_retries, num_of_logical_cores):
+    """Implements core assignment behavior observed in the energy inference project [1].
+
+    This function collects telemetry data from inference tasks [1] to observe CPU core residency. Based on the typical
+    operating system state of an inference server, it creates a probabilistic model to replicate core assignment behavior.
+
+    [1] https://github.com/grantwilkins/energy-inference.git
+    """
+    if num_of_logical_cores != 256:
+        raise ValueError("Probabilistic model is only designed for 256 logical cores")
+    core_ids = [core.id for core in cores_in_use]
+    if len(core_ids) == num_of_logical_cores:
         raise ValueError("All cores are allocated")
     core_id = next(sampler)
     retries = 0
-    while core_id in allocated_cores:
+    while core_id in core_ids:
         retries += 1
         if retries < max_retries:
             core_id = next(sampler)
         else:
-            core_id = np.random.randint(range)
+            core_id = np.random.randint(num_of_logical_cores)
     return core_id
 
 

@@ -522,12 +522,14 @@ class ORCAInstance(Instance):
                 raise ValueError(f"Unexpected task state {task.state} in start_iteration")
 
         # assign the cpu core that handled the iteration
+        core_assignment_overhead_time = 0.0
         for processor in self.processors:
             if processor.processor_type.value == 1:
-                self.iteration_core_id = processor.assign_core_to_iteration()
+                self.iteration_core_id, core_assignment_overhead_time \
+                    = processor.assign_core_to_iteration(self.application.model_architecture)
 
         self.completion_events["iteration"] = schedule_event(
-                        self.iteration_duration * self.num_contiguous_iterations,
+                        self.iteration_duration * self.num_contiguous_iterations + core_assignment_overhead_time,
                         lambda instance=self: instance.complete_iteration())
 
     def pause_iteration(self):

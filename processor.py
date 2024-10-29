@@ -1,15 +1,40 @@
-import logging
 import os
-
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from core_residency import gen_core_id
-from core_residency import sampler
+from core_power import CStates, calculate_core_power, calculate_c_state, CState
+from core_residency import allocate_cores_argane_swing_dst
 from instance import Instance
-from simulator import clock, schedule_event, cancel_event, reschedule_event
+from simulator import clock
 
-LOGICAL_CORE_COUNT = 256
+CORE_IS_FREE = ''
+
+#LOGICAL_CORE_COUNT = 256
+
+class Core:
+    """A core in the cpu"""
+    id: int
+    model: str = None
+    c_state: CState = CStates.C0.value
+    last_idle_durations = []
+    last_idle_set_time: float = 0.0 # last time that the core is set to idle.
+
+    # init for all params.
+    def __init__(self, id: int):
+        self.id = id
+        self.model = None
+        self.c_state = CStates.C0.value
+        self.last_idle_durations = []
+        self.last_idle_set_time = 0.0
+
+    def __str__(self):
+        return (
+            f"Core(id={self.id}, "
+            f"model={self.model}, "
+            f"c_state={self.c_state}, "
+            f"last_idle_durations={self.last_idle_durations}, "
+            f"last_idle_set_time={self.last_idle_set_time})"
+        )
 
 
 class ProcessorType(IntEnum):
@@ -116,35 +141,72 @@ class Processor():
 @dataclass(kw_only=True)
 class CPU(Processor):
     """
-    Modified to model an AMD EPYC 7742 CPU with 128 physical cores.
+    Modified to model an 2 * AMD EPYC CPU with 128 physical cores having hyper-threading disabled. In that way, each
+    logical core maps to a physical core. The profiling data can then be faithfully used. Profiling data of core
+    residency is measured from the operating system level, thus maps to occupancy of physical cores. Profiling data of
+    per-core power measurements were conducted by executing one inference task at a time, thus maps to power consumption
+    of a single logical core in our setup. Existing production AMD EPCY CPUs are able to provide this much of CPU cores.
+    Examples: https://www.titancomputers.com/AMD-EPYC-Genoa-9004-Series-up-to-256-Cores-Workstation-PC-s/1270.htm
 
     Attributes:
         processor_type (ProcessorType): The type of the Processor.
         cpu_cores (list[bool]): The logical cores of the CPU. Boolean state indicates if the core is in use.
     """
     processor_type: ProcessorType = ProcessorType.CPU
-    cpu_cores: [False] * LOGICAL_CORE_COUNT
+    cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(256)])
     core_activity_log: []
 
-    def assign_core_to_iteration(self):
-        """Assume that each iteration requires a single logical core."""
-        allocated_cores = {index for index, core in enumerate(self.cpu_cores) if core is True}
-        core_id = gen_core_id(sampler=sampler, allocated_cores=allocated_cores, max_retries=10, range=LOGICAL_CORE_COUNT)
-        self.cpu_cores[core_id] = True
-        self.log_core_activity()
-        return core_id
+    def assign_core_to_iteration(self, model):
+        assigned_core, time_to_wake = self.wake_and_assign_core()
+        assigned_core.model = model.name
+
+        assigned_core.last_idle_durations.append(clock() - assigned_core.last_idle_set_time)
+        # if size is 9, remove the first element
+        if len(assigned_core.last_idle_durations) == 9:
+            assigned_core.last_idle_durations.pop(0)
+
+        self.log_cpu_state()
+        return assigned_core.id, time_to_wake
 
     def release_core_from_iteration(self, iteration_core_id):
-        self.cpu_cores[iteration_core_id] = False
-        self.log_core_activity()
+        core = list(filter(lambda c: c.id == iteration_core_id, self.cpu_cores))[0]
+        core.model = None
 
-    def log_core_activity(self):
-        # Log core activity
-        log_entry = {"clock": clock()}
-        for i in range(LOGICAL_CORE_COUNT):
-            log_entry[f"core_{i}"] = self.cpu_cores[i]
-        # log_entry = {"clock": clock(), "core_id": core_id, "is_allocated": True, "is_released": False}
-        self.core_activity_log.append(log_entry)
+        # Set to the idle state. Core state transition time is not considered here, as assume core is not picked
+        # until its completion.
+        next_c_state = calculate_c_state(last_8_idle_durations_s=core.last_idle_durations)
+        core.c_state = next_c_state
+
+        core.last_idle_set_time = clock()
+
+        self.log_cpu_state()
+
+    def wake_and_assign_core(self):
+        cores_in_use = list(filter(lambda core: core.model is not None, self.cpu_cores))
+        assigned_core_id = None
+
+        assigned_core_id = allocate_cores_argane_swing_dst(cores_in_use=cores_in_use,
+                                                           max_retries=10,
+                                                           num_of_logical_cores=len(self.cpu_cores))
+
+        assigned_core = list(filter(lambda core: core.id == assigned_core_id, self.cpu_cores))[0]
+        if assigned_core.model is not None:
+            raise ValueError("Core already allocated")
+
+        transition_latency = assigned_core.c_state.transition_time_s
+        assigned_core.c_state = CStates.C0.value
+
+        return assigned_core, transition_latency
+
+    def log_cpu_state(self):
+        for core in self.cpu_cores:
+            self.core_activity_log.append({
+                'clock': clock(),
+                'id': core.id,
+                'model': core.model,
+                'c-state': core.c_state.state,
+                'power': calculate_core_power(c_state=core.c_state, model=core.model)
+            })
 
 
 @dataclass(kw_only=True)
