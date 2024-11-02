@@ -86,20 +86,26 @@ def allocate_cores_argane_swing_dst(cores_in_use, max_retries, num_of_logical_co
 
     [1] https://github.com/grantwilkins/energy-inference.git
     """
-    if num_of_logical_cores != 256:
-        raise ValueError("Probabilistic model is only designed for 256 logical cores")
-    core_ids = [core.id for core in cores_in_use]
-    if len(core_ids) == num_of_logical_cores:
+    used_core_ids = [core.id for core in cores_in_use]
+    if len(used_core_ids) == num_of_logical_cores:
         raise ValueError("All cores are allocated")
-    core_id = next(sampler)
+    core_id = get_core_id_of_argane_swing(num_cores=num_of_logical_cores)
     retries = 0
-    while core_id in core_ids:
+    while core_id in used_core_ids:
         retries += 1
         if retries < max_retries:
-            core_id = next(sampler)
+            core_id = get_core_id_of_argane_swing(num_cores=num_of_logical_cores)
         else:
             core_id = np.random.randint(num_of_logical_cores)
     return core_id
+
+
+def get_core_id_of_argane_swing(num_cores):
+    TOTAL_CORES = 256
+    id = next(sampler)
+    # scale the core id
+    ratio = TOTAL_CORES / num_cores
+    return id % ratio
 
 
 df_core_residency = get_formatted_data(pd.read_csv('data/infer-amd-swing-llama270b.csv'))

@@ -1,16 +1,24 @@
 from enum import Enum
 
+# approximate infinity value for the latency limit of the core wake-up time.
+# requirement is to have an upper bound for all core idle state transition times.
+# we set to an hour, because all core transition times are practically less than that.
+APPROX_INFINITY_S = 60 * 60
+
+
 class CState:
     state: str
     target_residency_s: float
     transition_time_s: float
     power_w: float
+    p_state: str
 
-    def __init__(self, state, target_residency_s, transition_time_s, power_w):
+    def __init__(self, state, target_residency_s, transition_time_s, power_w, p_state):
         self.state = state
         self.target_residency_s = target_residency_s
         self.transition_time_s = transition_time_s
         self.power_w = power_w
+        self.p_state = p_state
 
     def __str__(self):
         return (
@@ -21,9 +29,15 @@ class CState:
         )
 
 class CStates(Enum):
-    C0 = CState('C0', 0.0, 0.0, 4.0)
-    C1 = CState('C1', 2e-6, 2e-6, 1.44)
-    C6 = CState('C6', 0.0006, 0.000133, 0.1)
+    """Server CPU C-states from Table 1 of [1].
+    [1] J. H. Yahya et al., "AgileWatts: An Energy-Efficient CPU Core Idle-State Architecture for Latency-Sensitive
+    Server Applications," 2022 55th IEEE/ACM International Symposium on Microarchitecture (MICRO), Chicago, IL, USA,
+    2022, pp. 835-850, doi: 10.1109/MICRO56248.2022.00063. keywords: {Degradation;Program processors;Microarchitecture;
+    Coherence;Market research;Energy efficiency;Generators;Energy Efficiency;power management;Latency Sensitive applications},
+    """
+    C0 = CState('C0', 0.0, 0.0, 4.0, 'P1') # active and executing instructions at highest performance state
+    C1 = CState('C1', 2e-6, 2e-6, 1.44, 'P1') # idle but online
+    C6 = CState('C6', 0.0006, 0.000133, 0.1, p_state=None) # deep sleep state
 
 def get_c_states():
     """Server CPU C-states.
@@ -81,15 +95,15 @@ def calculate_core_power(c_state, model):
     Returns:
     - power value.
     """
-    if model is not None:
-        # Use observed data of core serving a model
-        return get_core_power_for_model(model_name=model)
+    # if model is not None:
+    #     # Use observed data of core serving a model
+    #     return get_core_power_for_model(model_name=model)
 
     # Use c-state for idle state power consumption
     return c_state.power_w
 
 
-def calculate_c_state(last_8_idle_durations_s=None):
+def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_core_wake_s=APPROX_INFINITY_S):
     """Implements Menu governer algorithm[1] to calculate the C-state.
 
     There are several steps in selecting a c-state per-core. Goal here is to correctly predict the idle duration of the
@@ -118,7 +132,7 @@ def calculate_c_state(last_8_idle_durations_s=None):
     """
     if last_8_idle_durations_s is None:
         last_8_idle_durations_s = []
-    predicted_idle_duration = float('inf')
+    predicted_idle_duration = APPROX_INFINITY_S
     while len(last_8_idle_durations_s) > 0:
         average = sum(last_8_idle_durations_s) / len(last_8_idle_durations_s)
         variance = sum((x - average) ** 2 for x in last_8_idle_durations_s) / len(last_8_idle_durations_s)
@@ -130,8 +144,7 @@ def calculate_c_state(last_8_idle_durations_s=None):
 
     latency_limit = predicted_idle_duration
     number_of_tasks_waiting_on_io = 0  # we assume LLM inference tasks are CPU bound
-    latency_limit_of_power_mgt_qos = float(
-        'inf')  # we assume the worst, where power management quality of service do not apply a latency limit
+    latency_limit_of_power_mgt_qos = latency_limit_core_wake_s
     if number_of_tasks_waiting_on_io > 0:
         latency_limit = latency_limit / number_of_tasks_waiting_on_io
     latency_limit = min(latency_limit, latency_limit_of_power_mgt_qos)
@@ -143,9 +156,9 @@ def calculate_c_state(last_8_idle_durations_s=None):
         transition_time = c_state.transition_time_s
         if transition_time > latency_limit:
             continue
-        if target_residency >= predicted_idle_duration:
-            gap = target_residency - predicted_idle_duration
-            current_gap = chosen_c_state.target_residency_s - predicted_idle_duration
+        if predicted_idle_duration > target_residency:
+            gap = predicted_idle_duration - target_residency
+            current_gap = predicted_idle_duration - chosen_c_state.target_residency_s
             if gap < current_gap:
                 chosen_c_state = c_state
 

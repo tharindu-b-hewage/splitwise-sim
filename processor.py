@@ -2,10 +2,12 @@ import os
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from core_power import CStates, calculate_core_power, calculate_c_state, CState
+from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S
 from core_residency import allocate_cores_argane_swing_dst
 from instance import Instance
 from simulator import clock
+
+NUM_CORES = 128
 
 CORE_IS_FREE = ''
 
@@ -23,7 +25,7 @@ class Core:
     def __init__(self, id: int):
         self.id = id
         self.model = None
-        self.c_state = CStates.C0.value
+        self.c_state = CStates.C1.value
         self.last_idle_durations = []
         self.last_idle_set_time = 0.0
 
@@ -153,15 +155,19 @@ class CPU(Processor):
         cpu_cores (list[bool]): The logical cores of the CPU. Boolean state indicates if the core is in use.
     """
     processor_type: ProcessorType = ProcessorType.CPU
-    cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(256)])
+    cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(NUM_CORES)])
     core_activity_log: []
 
     def assign_core_to_iteration(self, model):
-        assigned_core, time_to_wake = self.wake_and_assign_core()
-        assigned_core.model = model.name
+        assigned_core, time_to_wake = self.get_a_core_to_assign()
 
+        # set the core to serve
+        assigned_core.model = model.name
+        assigned_core.c_state = CStates.C0.value # set core to busy
         assigned_core.last_idle_durations.append(clock() - assigned_core.last_idle_set_time)
-        # if size is 9, remove the first element
+        assigned_core.last_idle_set_time = None
+
+        # maintain a list of last 8 idle durations
         if len(assigned_core.last_idle_durations) == 9:
             assigned_core.last_idle_durations.pop(0)
 
@@ -169,32 +175,30 @@ class CPU(Processor):
         return assigned_core.id, time_to_wake
 
     def release_core_from_iteration(self, iteration_core_id):
+        # free the core
         core = list(filter(lambda c: c.id == iteration_core_id, self.cpu_cores))[0]
         core.model = None
+        core.c_state = CStates.C1.value # set core to idle
 
-        # Set to the idle state. Core state transition time is not considered here, as assume core is not picked
-        # until its completion.
-        next_c_state = calculate_c_state(last_8_idle_durations_s=core.last_idle_durations)
+        # update core idle state
+        next_c_state = get_c_state_from_idle_governor(last_8_idle_durations_s=core.last_idle_durations,
+                                                      latency_limit_core_wake_s=APPROX_INFINITY_S)
         core.c_state = next_c_state
-
         core.last_idle_set_time = clock()
 
         self.log_cpu_state()
 
-    def wake_and_assign_core(self):
+    def get_a_core_to_assign(self):
         cores_in_use = list(filter(lambda core: core.model is not None, self.cpu_cores))
-        assigned_core_id = None
-
         assigned_core_id = allocate_cores_argane_swing_dst(cores_in_use=cores_in_use,
-                                                           max_retries=10,
+                                                           max_retries=128,
                                                            num_of_logical_cores=len(self.cpu_cores))
-
         assigned_core = list(filter(lambda core: core.id == assigned_core_id, self.cpu_cores))[0]
         if assigned_core.model is not None:
             raise ValueError("Core already allocated")
 
         transition_latency = assigned_core.c_state.transition_time_s
-        assigned_core.c_state = CStates.C0.value
+        assigned_core.c_state = CStates.C1.value # set core to idle
 
         return assigned_core, transition_latency
 
