@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from instance import Instance
+from instance import Instance, CpuTaskType
 from metrics import FlowMetrics, FlowSLO
 from model import Model, ModelArchitecture
 from node import Node

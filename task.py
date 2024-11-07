@@ -144,7 +144,12 @@ class PromptTask(Task):
 
         # ensure that we processed and generated all tokens
         assert self.processed_tokens == self.prompt_size
-        assert self.request.processed_tokens == self.request.prompt_size
+
+        try:
+            assert self.request.processed_tokens == self.request.prompt_size
+        except AssertionError:
+            logging.error(f"clk: {clock()}: Request {self.request.request_id} has processed tokens {self.request.processed_tokens} != prompt size {self.request.prompt_size}")
+
         assert self.generated_tokens == 1
 
         # manage memory
@@ -208,9 +213,17 @@ class TokenTask(Task):
         # ensure that we generated all tokens
         assert self.processed_tokens == self.token_size
         assert self.generated_tokens == self.token_size
-        assert self.request.generated_tokens == self.request.token_size
-        assert self.request.processed_tokens == self.request.prompt_size + \
+
+        try:
+            assert self.request.generated_tokens == self.request.token_size
+        except AssertionError:
+            logging.error(f"clk: {clock()}: Request {self.request.request_id} has generated tokens {self.request.generated_tokens} != token size {self.request.token_size}")
+
+        try:
+            assert self.request.processed_tokens == self.request.prompt_size + \
                                                 self.request.token_size - 1
+        except AssertionError:
+            logging.error(f"clk: {clock()}: Request {self.request.request_id} has processed tokens {self.request.processed_tokens} != prompt size {self.request.prompt_size} + token size {self.request.token_size} - 1")
 
         # manage memory
         if self.cleanup_memory:

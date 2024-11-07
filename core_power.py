@@ -46,26 +46,41 @@ def get_c_states():
     Server Applications," 2022 55th IEEE/ACM International Symposium on Microarchitecture (MICRO), Chicago, IL, USA,
     2022, pp. 835-850, doi: 10.1109/MICRO56248.2022.00063. keywords: {Degradation;Program processors;Microarchitecture;
     Coherence;Market research;Energy efficiency;Generators;Energy Efficiency;power management;Latency Sensitive applications},
+
+    information: https://lenovopress.lenovo.com/lp1945-using-processor-idle-c-states-with-linux-on-thinksystem-servers
     """
     return [
         {
             "state": "C0",
             "transition_time_s": 0.0,
             "target_residency_s": 0.0,
-            "power_w": 4.0
+            "power_w": 4.0,
+            "IPC": 1.0 # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
+            # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
+            # change according to request characteristics such as token count.
         },
         {
             "state": "C1",
             "transition_time_s": 2e-6,
             "target_residency_s": 2e-6,
-            "power_w": 1.44
+            "power_w": 1.44,
+            "IPC": 0.0 # halted state. no instructions executed.
         },
         {
             "state": "C6",
             "transition_time_s": 0.000133,
             "target_residency_s": 0.0006,
-            "power_w": 0.1
+            "power_w": 0.1,
+            "IPC": 0.0
         },
+        {
+            #https://www.techpowerup.com/cpu-specs/epyc-7763.c2373
+            "state": "package",
+            "tdp": 205.0,
+            "tdp_divided_per_core": 7.3, # 205/28
+            "c_state_power_at_tdp_per_core": 3.3, # 7.3 - 4.0 (assuming core operates at C0 state)
+            "package_overhead_per_core": 3.3
+        }
     ]
 
 def get_core_power_for_model(model_name):
@@ -149,8 +164,8 @@ def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_c
         latency_limit = latency_limit / number_of_tasks_waiting_on_io
     latency_limit = min(latency_limit, latency_limit_of_power_mgt_qos)
 
-    c_states = [state.value for state in CStates]
-    chosen_c_state = list(filter(lambda x: x.state == "C0", c_states))[0]  # default to C0
+    c_states = [state.value for state in CStates if state.value.state != "C0"] # C0 indicate active and executing instructions, which is not idle
+    chosen_c_state = list(filter(lambda x: x.state == "C1", c_states))[0]  # default to C1 = idle but online
     for c_state in c_states:
         target_residency = c_state.target_residency_s
         transition_time = c_state.transition_time_s
@@ -163,3 +178,26 @@ def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_c
                 chosen_c_state = c_state
 
     return chosen_c_state
+
+def calculate_WTTF(time_s, c_state):
+    """
+    Placeholder function to calculate the Weighted Time to First Failure (WTTF) of the system [1].
+
+    [1] "The case of unsustainable affinity" - hotcarbon'23
+
+    Returns:
+    - WTTF value.
+    """
+    c_state = list(filter(lambda state: state["state"] == c_state, get_c_states()))[0]
+    '''Calculation of WTTF
+    WTTF = SUM(ipc * operating_frequency * delta_t)
+    
+    ipc: Instructions per cycle. Based on the workload. In inference, the CPU workload is almost homogeneous across 
+    requests. It does not depends on the number of tokens in the request. Thus, we use an indicative constant value of 
+    that per c-state. Across c-states, the indicative value is adjusted relatively.
+    
+    operating_frequency: To isolate the effect of usage, we do not delve into the effect of dynamic frequency. We assume
+    servers are tuned to provide a constant performance via a constant cpu frequency.
+    '''
+    wttf = c_state['IPC'] * 1.0 * time_s
+    return wttf

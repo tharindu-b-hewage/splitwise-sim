@@ -10,6 +10,7 @@ import utils
 from metrics import InstanceMetrics
 from node import NodeState
 from performance_model import get_duration, get_iteration_duration
+#from processor import CPU
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from task import PromptTask, TokenTask
 
@@ -25,6 +26,9 @@ class Instance():
     NOTE: uses a FIFO task queue, not priority queue
     NOTE: preemptions, batching, etc. implemented in subclasses
     """
+
+    cpu = None
+
     def __init__(self,
                  instance_id,
                  application,
@@ -78,7 +82,8 @@ class Instance():
             os.makedirs(os.path.dirname(logger_name), exist_ok=True)
             self.scheduler_logger = utils.file_logger(logger_name, level)
 
-        self.iteration_core_id = None
+        ## set cpu
+        self.cpu = list(filter(lambda p: p.processor_type.value == 1, self.processors))[0]
 
     @property
     def model(self):
@@ -122,16 +127,20 @@ class Instance():
         """
         Task arrives at this Instance.
         """
+        # todo: core assignment is not implemented here, as we only simulate with SpliwiseInstance. If to use this class,
+        # core assignment should be implemented.
         task.instance = self
         task.arrive()
         self.pending_queue.append(task)
         if len(self.pending_queue) == 1 and len(self.batch) == 0:
             self.run_task(task)
 
-    def task_completion(self, task):
+    def task_completion(self, task, core_id=None):
         """
         Task completes at this Instance.
         """
+        # todo: core assignment is not implemented here, as we only simulate with SpliwiseInstance. If to use this class,
+        # core assignment should be implemented.
         task.complete()
         self.metrics.busy_time += clock() - self.metrics.run_timestamp
         self.metrics.run_timestamp = 0.
@@ -141,6 +150,9 @@ class Instance():
         if len(self.pending_queue) > 0:
             next_task = self.pending_queue[0]
             self.run_task(next_task)
+
+        if core_id is not None:
+            self.cpu.release_core_from_cpu_task(task_core_id=core_id)
 
     def notify_flow_completion(self, flow):
         """
@@ -166,8 +178,10 @@ class Instance():
         task.duration = get_duration(task=task,
                                      batch=[task],
                                      instance=self)
-        schedule_event(self.overheads.run + task.duration,
-                       lambda instance=self,task=task: instance.task_completion(task))
+
+        core_id, core_overhead = self.cpu.assign_core_to_cpu_task(task=CpuTaskType.RUN_TASK)
+        schedule_event(self.overheads.run + task.duration + core_overhead,
+                       lambda instance=self,task=task: instance.task_completion(task, core_id=core_id))
 
     def preempt_task(self, task):
         """
@@ -361,6 +375,8 @@ class ORCAInstance(Instance):
             del self.request_tasks[task.request]
 
     def task_arrival(self, task):
+        # todo: core assignment is not implemented here, as we only simulate with SpliwiseInstance. If to use this class,
+        # core assignment should be implemented.
         task.instance = self
         task.arrive()
 
@@ -521,16 +537,11 @@ class ORCAInstance(Instance):
             else:
                 raise ValueError(f"Unexpected task state {task.state} in start_iteration")
 
-        # assign the cpu core that handled the iteration
-        core_assignment_overhead_time = 0.0
-        for processor in self.processors:
-            if processor.processor_type.value == 1:
-                self.iteration_core_id, core_assignment_overhead_time \
-                    = processor.assign_core_to_iteration(self.application.model_architecture)
-
+        # assign the cpu core that handles the iteration
+        core_id, core_overhead = self.cpu.assign_core_to_cpu_task(task=CpuTaskType.INFERENCE_ITERATION, override_task_description=self.application.model_architecture)
         self.completion_events["iteration"] = schedule_event(
-                        self.iteration_duration * self.num_contiguous_iterations + core_assignment_overhead_time,
-                        lambda instance=self: instance.complete_iteration())
+            (self.iteration_duration * self.num_contiguous_iterations) + core_overhead,
+                        lambda instance=self: instance.complete_iteration(core_id=core_id))
 
     def pause_iteration(self):
         """
@@ -560,10 +571,15 @@ class ORCAInstance(Instance):
         contiguous_iteration_duration_new = self.iteration_duration * self.num_contiguous_iterations
         remaining_time = contiguous_iteration_duration_new - elapsed_time
 
+        '''simulating core allocation for the rescheduled event below
+        Following event reduces the runtime of the current iteration. It mimics that the iteration process is still 
+        executing on the original core, but the runtime is reduced due to the rescheduling of the event. Thus no need 
+        for core allocation for this event.
+        '''
         self.completion_events["iteration"] = reschedule_event(
                             self.completion_events["iteration"], remaining_time)
 
-    def complete_iteration(self):
+    def complete_iteration(self, core_id=None):
         """
         Complete an iteration of a batch tasks.
         Tasks which complete leave the batch.
@@ -584,19 +600,17 @@ class ORCAInstance(Instance):
             self.task_completion(task)
 
         # release the cpu core assigned to the iteration
-        self.release_cpu_core()
+        if core_id is not None:
+            self.release_cpu_core(core_id=core_id)
 
         # start next iteration
         self.pause_next_iteration = False
         self.start_iteration()
 
-    def release_cpu_core(self):
-        for processor in self.processors:
-            if processor.processor_type.value == 1:
-                processor.release_core_from_iteration(self.iteration_core_id)
-                self.iteration_core_id = None
+    def release_cpu_core(self, core_id):
+        self.cpu.release_core_from_cpu_task(task_core_id=core_id)
 
-    def task_completion(self, task):
+    def task_completion(self, task, core_id=None):
         """
         Task completes within a batch.
         """
@@ -605,11 +619,16 @@ class ORCAInstance(Instance):
         self.remove_from_pool(task)
         self.completed_queue.append(task)
         task.executor.finish_task(task, self)
+        if core_id is not None:
+            self.cpu.release_core_from_cpu_task(task_core_id=core_id)
 
-    def notify_flow_completion(self, flow):
+    def notify_flow_completion(self, flow, core_for_flow_completion_notify=None):
         """
         Notify instance of flow completion.
         """
+        if core_for_flow_completion_notify is not None:
+            self.cpu.release_core_from_cpu_task(task_core_id=core_for_flow_completion_notify)
+
         if len(self.pending_queue) == 0:
             return
 
@@ -627,6 +646,24 @@ class ORCAInstance(Instance):
             self.pause_iteration()
             return
 
+from enum import Enum
+
+# default overhead time is an indicative value. we use default timeslice of real-time process in linux kernel,
+# which is 100ms, assuming if none provided, task is treated as real-time process, in terms of the time slice.
+LINUX_RR_PROCESS_TIMESLICE = 0.1
+class CpuTaskType(Enum):
+    HANDLE_TASK_ARRIVAL = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "handle task arrival"}
+    INFERENCE_ITERATION = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "inference iteration"}
+    RUN_TASK = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "run task"}
+    FLOW_COMPLETION = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "flow completion"}
+
+class CpuTask:
+    task: CpuTaskType
+    meta: str
+
+    def __init__(self, task, meta):
+        self.task: CpuTaskType = task
+        self.meta = meta
 
 class SplitwiseInstance(ORCAInstance):
     """
@@ -699,7 +736,14 @@ class SplitwiseInstance(ORCAInstance):
         else:
             raise ValueError(f"Unexpected task type {task.task_type} in remove_pending_task")
 
-    def task_arrival(self, task):
+    def task_arrival(self, task, core_id_for_task_arrival_function=None):
+
+        # when task arrival function is triggered, the caller is expected to trigger event with a delay to simulate
+        # runtime of this function on the allocated cpu core. So we deallocated the core here, primarily
+        # because three different outcomes of this function returns immediately.
+        if core_id_for_task_arrival_function is not None:
+            self.cpu.release_core_from_cpu_task(task_core_id=core_id_for_task_arrival_function)
+
         task.instance = self
         task.arrive()
 

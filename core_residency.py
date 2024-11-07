@@ -78,7 +78,7 @@ def core_id_sampler(df, bw_adjust=0.1):
         yield int(np.round(kde.resample(1)[0]))
 
 
-def allocate_cores_argane_swing_dst(cores_in_use, max_retries, num_of_logical_cores):
+def allocate_cores_argane_swing_dst(available_cores, max_retries):
     """Implements core assignment behavior observed in the energy inference project [1].
 
     This function collects telemetry data from inference tasks [1] to observe CPU core residency. Based on the typical
@@ -86,26 +86,30 @@ def allocate_cores_argane_swing_dst(cores_in_use, max_retries, num_of_logical_co
 
     [1] https://github.com/grantwilkins/energy-inference.git
     """
-    used_core_ids = [core.id for core in cores_in_use]
-    if len(used_core_ids) == num_of_logical_cores:
-        raise ValueError("All cores are allocated")
-    core_id = get_core_id_of_argane_swing(num_cores=num_of_logical_cores)
+    free_core_ids = [core.id for core in available_cores if core.task is None]
+    if len(free_core_ids) == 0:
+        raise ValueError("No free cores are available")
+
+    core_id = None
     retries = 0
-    while core_id in used_core_ids:
-        retries += 1
-        if retries < max_retries:
-            core_id = get_core_id_of_argane_swing(num_cores=num_of_logical_cores)
-        else:
-            core_id = np.random.randint(num_of_logical_cores)
-    return core_id
+    while core_id is None:
+        core_id = get_core_id_of_argane_swing(num_cores=len(available_cores))
+        if core_id not in free_core_ids:
+            core_id = None
+            retries += 1
+        if retries >= max_retries:
+            core_id = free_core_ids[0]
+
+    return list(filter(lambda core: core.id == core_id, available_cores))[0]
 
 
 def get_core_id_of_argane_swing(num_cores):
-    TOTAL_CORES = 256
+    TOTAL_CORES_OF_THE_SAMPLER_MODEL = 256
     id = next(sampler)
     # scale the core id
-    ratio = TOTAL_CORES / num_cores
-    return id % ratio
+    ratio = (num_cores / TOTAL_CORES_OF_THE_SAMPLER_MODEL)
+    scaled_id = id * ratio
+    return int(scaled_id)
 
 
 df_core_residency = get_formatted_data(pd.read_csv('data/infer-amd-swing-llama270b.csv'))

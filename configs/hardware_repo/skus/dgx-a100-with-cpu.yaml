@@ -4,6 +4,6 @@ tdp: 6500
 processors:
   - name: a100-80gb
     count: 8
-  - name: amd-epcy-7742
+  - name: dual-amd-rome-7742
     count: 1
 interconnects: {}

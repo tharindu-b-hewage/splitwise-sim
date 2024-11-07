@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 from flow import Flow
+from instance import CpuTaskType
 from processor import CPU, GPU
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from server import Server
@@ -102,8 +103,12 @@ class Link():
         self.executing_queue.remove(flow)
         self.completed_queue.append(flow)
         flow.executor.finish_flow(flow, self)
+
+        core_for_flow_completion_notify, core_overhead = flow.src.cpu.assign_core_to_cpu_task(task=CpuTaskType.FLOW_COMPLETION)
+        task_runtime = CpuTaskType.FLOW_COMPLETION.value["overhead_time"]
         if flow.notify:
-            flow.src.notify_flow_completion(flow)
+            schedule_event(task_runtime + core_overhead, lambda flow=flow: flow.src.notify_flow_completion(flow=flow, core_for_flow_completion_notify=core_for_flow_completion_notify))
+
         self.bandwidth_used -= (self.bandwidth - self.bandwidth_used)
         if len(self.pending_queue) > 0 and len(self.executing_queue) < self.max_flows:
             next_flow = self.pending_queue[0]

@@ -1,0 +1,6 @@
+_target_: processor.CPU
+name: amd-epcy-7742
+# value setting is hardcoded. Need to fix properly.
+memory_size: 0
+core_activity_log: []
+core_count: 112

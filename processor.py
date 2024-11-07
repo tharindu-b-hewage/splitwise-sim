@@ -7,24 +7,59 @@ from core_residency import allocate_cores_argane_swing_dst
 from instance import Instance
 from simulator import clock
 
-NUM_CORES = 128
+# ServerlessLLM: With optimization, LLM serving is done with 4 cores. In their setup, 4 cores achieved the maximum
+# bandwidth utilization.
+
+# '''specs
+# DGX H100 - https://resources.nvidia.com/en-us-dgx-systems/ai-enterprise-dgx?xs=489753
+# DGX A100 - https://images.nvidia.com/aem-dam/Solutions/Data-Center/nvidia-dgx-a100-datasheet.pdf
+# '''
+# machine_specs = {
+#     'dgx-h100-with-cpu': { # Dual Intel® Xeon® Platinum 8480C
+#         'cores': 112,
+#         'refresh_cycle_years': 3,
+#         'cpu_tdp_w': 700,
+#         'rest_of_pkg_power_w': 252,
+#         'c0_power_w': 4.0,
+#         'c6_power_w': 0.1,
+#         # this is assumed to be a constant. rest_of_pkg_power_w + num_cores * c0_power = cpu_tdp_w
+#         # C-state power values are approximated with Intel Skylake c-state idle power consumption
+#     },
+#     'dgx-a100-with-cpu': { # Dual AMD Rome 7742
+#         'cores': 128,
+#         'refresh_cycle_years': 3,
+#         # https://mcomputers.cz/en/products-and-services/nvidia/dgx-systems/nvidia-dgx-a100/
+#         'cpu_tdp_w': 450,
+#         'rest_of_pkg_power_w': 117.2,
+#         # idle_power is 130 W (https://www.anandtech.com/show/16778/amd-epyc-milan-review-part-2/3). assume idle is all cores at c6.
+#         # num_cores * c6_power + rest_of_pkg_power_w = idle_power
+#         'c0_power_w': 2.6,
+#         # num_cores * c0_power + rest_of_pkg_power_w = cpu_tdp_w
+#         'c1_power_w': 0.936,
+#         # Approx. Intel skylake: C1 power is 0.36 times C6 power.
+#         'c6_power_w': 0.1,
+#         # approximated with Intel skylake C6
+#     },
+# }
 
 CORE_IS_FREE = ''
+ENABLE_DEBUG_LOGS = False
 
-#LOGICAL_CORE_COUNT = 256
+
+# LOGICAL_CORE_COUNT = 256
 
 class Core:
     """A core in the cpu"""
     id: int
-    model: str = None
-    c_state: CState = CStates.C0.value
+    task: str = None
+    c_state: CState = CStates.C1.value
     last_idle_durations = []
-    last_idle_set_time: float = 0.0 # last time that the core is set to idle.
+    last_idle_set_time: float = 0.0  # last time that the core is set to idle.
 
     # init for all params.
     def __init__(self, id: int):
         self.id = id
-        self.model = None
+        self.task = None
         self.c_state = CStates.C1.value
         self.last_idle_durations = []
         self.last_idle_set_time = 0.0
@@ -32,11 +67,20 @@ class Core:
     def __str__(self):
         return (
             f"Core(id={self.id}, "
-            f"model={self.model}, "
+            f"task={self.task}, "
             f"c_state={self.c_state}, "
             f"last_idle_durations={self.last_idle_durations}, "
             f"last_idle_set_time={self.last_idle_set_time})"
         )
+
+    def get_record(self):
+        return {
+            'id': self.id,
+            'task': self.task,
+            'c_state': self.c_state.state,
+            'last_idle_durations': self.last_idle_durations,
+            'last_idle_set_time': self.last_idle_set_time
+        }
 
 
 class ProcessorType(IntEnum):
@@ -116,7 +160,7 @@ class Processor():
                 csv_entry.append(len(instance.pending_queue))
                 f.write(",".join(map(str, csv_entry)) + "\n")
             # raise OOM error
-            #raise ValueError("OOM")
+            # raise ValueError("OOM")
         self._memory_used = memory_used
 
     @property
@@ -155,15 +199,25 @@ class CPU(Processor):
         cpu_cores (list[bool]): The logical cores of the CPU. Boolean state indicates if the core is in use.
     """
     processor_type: ProcessorType = ProcessorType.CPU
-    cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(NUM_CORES)])
+    core_count: int
+    #cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(core_count)])
+    cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(1)])
     core_activity_log: []
 
-    def assign_core_to_iteration(self, model):
+    def __post_init__(self):
+        # Now we can use core_count to initialize cpu_cores
+        self.cpu_cores = [Core(id=idx) for idx in range(self.core_count)]
+
+
+    def assign_core_to_cpu_task(self, task, override_task_description=None):
         assigned_core, time_to_wake = self.get_a_core_to_assign()
 
         # set the core to serve
-        assigned_core.model = model.name
-        assigned_core.c_state = CStates.C0.value # set core to busy
+        # print(task.value)
+        assigned_core.task = task.value["info"]
+        if override_task_description is not None:
+            assigned_core.task = override_task_description
+        assigned_core.c_state = CStates.C0.value  # set core to busy
         assigned_core.last_idle_durations.append(clock() - assigned_core.last_idle_set_time)
         assigned_core.last_idle_set_time = None
 
@@ -171,14 +225,24 @@ class CPU(Processor):
         if len(assigned_core.last_idle_durations) == 9:
             assigned_core.last_idle_durations.pop(0)
 
-        self.log_cpu_state()
+        # debug
+        if ENABLE_DEBUG_LOGS:
+            print(f"Assign core: {assigned_core.id} to task: {assigned_core.task} at time: {clock()}")
+
+        self.log_cpu_state(core=assigned_core, time_to_wake=time_to_wake)
         return assigned_core.id, time_to_wake
 
-    def release_core_from_iteration(self, iteration_core_id):
+    def release_core_from_cpu_task(self, task_core_id):
+
         # free the core
-        core = list(filter(lambda c: c.id == iteration_core_id, self.cpu_cores))[0]
-        core.model = None
-        core.c_state = CStates.C1.value # set core to idle
+        core = list(filter(lambda c: c.id == task_core_id, self.cpu_cores))[0]
+
+        # debug
+        if ENABLE_DEBUG_LOGS:
+            print(f"Release core: {core.id} from task: {core.task} at time: {clock()}")
+
+        core.task = None
+        core.c_state = CStates.C1.value  # set core to idle
 
         # update core idle state
         next_c_state = get_c_state_from_idle_governor(last_8_idle_durations_s=core.last_idle_durations,
@@ -186,31 +250,29 @@ class CPU(Processor):
         core.c_state = next_c_state
         core.last_idle_set_time = clock()
 
-        self.log_cpu_state()
+        self.log_cpu_state(core=core, time_to_wake=None)
 
     def get_a_core_to_assign(self):
-        cores_in_use = list(filter(lambda core: core.model is not None, self.cpu_cores))
-        assigned_core_id = allocate_cores_argane_swing_dst(cores_in_use=cores_in_use,
-                                                           max_retries=128,
-                                                           num_of_logical_cores=len(self.cpu_cores))
-        assigned_core = list(filter(lambda core: core.id == assigned_core_id, self.cpu_cores))[0]
-        if assigned_core.model is not None:
-            raise ValueError("Core already allocated")
-
+        assigned_core = allocate_cores_argane_swing_dst(available_cores=self.cpu_cores, max_retries=self.core_count)
         transition_latency = assigned_core.c_state.transition_time_s
-        assigned_core.c_state = CStates.C1.value # set core to idle
-
+        assigned_core.c_state = CStates.C1.value  # set core to idle
         return assigned_core, transition_latency
 
-    def log_cpu_state(self):
-        for core in self.cpu_cores:
-            self.core_activity_log.append({
-                'clock': clock(),
-                'id': core.id,
-                'model': core.model,
-                'c-state': core.c_state.state,
-                'power': calculate_core_power(c_state=core.c_state, model=core.model)
-            })
+    def log_cpu_state(self, core=None, time_to_wake=None):
+        if core is None:
+            for core in self.cpu_cores:
+                self.core_activity_log.append({
+                    'clock': clock(),
+                    'id': core.id,
+                    'task': core.task,
+                    'c-state': core.c_state.state,
+                    'power': calculate_core_power(c_state=core.c_state, model=core.task)
+                })
+
+        core_state = core.get_record()
+        core_state['clock'] = clock()
+        core_state['c_state_wake_latency'] = time_to_wake
+        self.core_activity_log.append(core_state)
 
 
 @dataclass(kw_only=True)

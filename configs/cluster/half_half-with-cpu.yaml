@@ -3,7 +3,7 @@ power_budget: 232000
 servers:
   - sku: dgx-a100-with-cpu
     count: 1
-  - sku: dgx-h100
+  - sku: dgx-h100-with-cpu
     count: 0
 
 interconnects:

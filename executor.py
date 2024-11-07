@@ -3,6 +3,7 @@ import logging
 from enum import IntEnum
 
 from flow import Flow
+from instance import CpuTaskType
 from node import NodeState
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from task import Task
@@ -78,9 +79,12 @@ class Executor():
             instance = task.instance
         task.executor = self
         self.submitted.append(task)
-        schedule_event(self.overheads.submit_task,
+
+        core_id_for_task_arrival, core_overhead = instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.HANDLE_TASK_ARRIVAL)
+        task_runtime = CpuTaskType.HANDLE_TASK_ARRIVAL.value["overhead_time"]
+        schedule_event(self.overheads.submit_task + task_runtime + core_overhead,
                        lambda instance=instance,task=task: \
-                           instance.task_arrival(task))
+                           instance.task_arrival(task, core_id_for_task_arrival_function=core_id_for_task_arrival))
         # if this is the first task in the chain, submit the chain
         self.submit_chain(task.chain)
 
