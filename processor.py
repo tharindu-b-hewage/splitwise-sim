@@ -10,38 +10,6 @@ from simulator import clock
 # ServerlessLLM: With optimization, LLM serving is done with 4 cores. In their setup, 4 cores achieved the maximum
 # bandwidth utilization.
 
-# '''specs
-# DGX H100 - https://resources.nvidia.com/en-us-dgx-systems/ai-enterprise-dgx?xs=489753
-# DGX A100 - https://images.nvidia.com/aem-dam/Solutions/Data-Center/nvidia-dgx-a100-datasheet.pdf
-# '''
-# machine_specs = {
-#     'dgx-h100-with-cpu': { # Dual Intel® Xeon® Platinum 8480C
-#         'cores': 112,
-#         'refresh_cycle_years': 3,
-#         'cpu_tdp_w': 700,
-#         'rest_of_pkg_power_w': 252,
-#         'c0_power_w': 4.0,
-#         'c6_power_w': 0.1,
-#         # this is assumed to be a constant. rest_of_pkg_power_w + num_cores * c0_power = cpu_tdp_w
-#         # C-state power values are approximated with Intel Skylake c-state idle power consumption
-#     },
-#     'dgx-a100-with-cpu': { # Dual AMD Rome 7742
-#         'cores': 128,
-#         'refresh_cycle_years': 3,
-#         # https://mcomputers.cz/en/products-and-services/nvidia/dgx-systems/nvidia-dgx-a100/
-#         'cpu_tdp_w': 450,
-#         'rest_of_pkg_power_w': 117.2,
-#         # idle_power is 130 W (https://www.anandtech.com/show/16778/amd-epyc-milan-review-part-2/3). assume idle is all cores at c6.
-#         # num_cores * c6_power + rest_of_pkg_power_w = idle_power
-#         'c0_power_w': 2.6,
-#         # num_cores * c0_power + rest_of_pkg_power_w = cpu_tdp_w
-#         'c1_power_w': 0.936,
-#         # Approx. Intel skylake: C1 power is 0.36 times C6 power.
-#         'c6_power_w': 0.1,
-#         # approximated with Intel skylake C6
-#     },
-# }
-
 CORE_IS_FREE = ''
 ENABLE_DEBUG_LOGS = False
 

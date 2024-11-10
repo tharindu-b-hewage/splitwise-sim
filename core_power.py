@@ -28,6 +28,7 @@ class CState:
             f"power_w={self.power_w})"
         )
 
+
 class CStates(Enum):
     """Server CPU C-states from Table 1 of [1].
     [1] J. H. Yahya et al., "AgileWatts: An Energy-Efficient CPU Core Idle-State Architecture for Latency-Sensitive
@@ -35,11 +36,66 @@ class CStates(Enum):
     2022, pp. 835-850, doi: 10.1109/MICRO56248.2022.00063. keywords: {Degradation;Program processors;Microarchitecture;
     Coherence;Market research;Energy efficiency;Generators;Energy Efficiency;power management;Latency Sensitive applications},
     """
-    C0 = CState('C0', 0.0, 0.0, 4.0, 'P1') # active and executing instructions at highest performance state
-    C1 = CState('C1', 2e-6, 2e-6, 1.44, 'P1') # idle but online
-    C6 = CState('C6', 0.0006, 0.000133, 0.1, p_state=None) # deep sleep state
+    C0 = CState('C0', 0.0, 0.0, 4.0, 'P1')  # active and executing instructions at highest performance state
+    C1 = CState('C1', 2e-6, 2e-6, 1.44, 'P1')  # idle but online
+    C6 = CState('C6', 0.0006, 0.000133, 0.1, p_state=None)  # deep sleep state
 
-def get_c_states():
+
+c_state_data = {
+    'dual-amd-rome-7742': {
+        'C0': {
+                "state": "C0",
+                "transition_time_s": 0.0,
+                "target_residency_s": 0.0,
+                "core_power_w": 2.572,
+                "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
+                # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
+                # change according to request characteristics such as token count.
+            },
+        'C1': {
+                "state": "C1",
+                "transition_time_s": 2e-6,
+                "target_residency_s": 2e-6,
+                "core_power_w": 2.572 * 0.30,
+                "IPC": 0.0  # halted state. no instructions executed.
+            },
+        'C6': {
+                "state": "C6",
+                "transition_time_s": 0.000133,
+                "target_residency_s": 0.0006,
+                "core_power_w": 2.572 * 0.025,
+                "IPC": 0.0
+            },
+    },
+    'dual-xeon-platinum-8480c': {
+        'C0': {
+                "state": "C0",
+                "transition_time_s": 0.0,
+                "target_residency_s": 0.0,
+                "core_power_w": 4.0,
+                "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
+                # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
+                # change according to request characteristics such as token count.
+            },
+        'C1': {
+                "state": "C1",
+                "transition_time_s": 2e-6,
+                "target_residency_s": 2e-6,
+                "core_power_w": 4.0 * 0.30, # ref: 'sleep well' paper
+                "IPC": 0.0  # halted state. no instructions executed.
+        },
+        'C6': {
+                "state": "C6",
+                "transition_time_s": 0.000133,
+                "target_residency_s": 0.0006,
+                "core_power_w": 4.0 * 0.025,
+                "IPC": 0.0
+            },
+    }
+}
+
+
+def get_c_states(cpu_model):
     """Server CPU C-states.
     To model idle states of server CPUs, we create a model based on specification values provided for Intel server CPUs.
     [1] J. H. Yahya et al., "AgileWatts: An Energy-Efficient CPU Core Idle-State Architecture for Latency-Sensitive
@@ -49,39 +105,118 @@ def get_c_states():
 
     information: https://lenovopress.lenovo.com/lp1945-using-processor-idle-c-states-with-linux-on-thinksystem-servers
     """
-    return [
-        {
-            "state": "C0",
-            "transition_time_s": 0.0,
-            "target_residency_s": 0.0,
-            "power_w": 4.0,
-            "IPC": 1.0 # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
-            # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
-            # change according to request characteristics such as token count.
-        },
-        {
-            "state": "C1",
-            "transition_time_s": 2e-6,
-            "target_residency_s": 2e-6,
-            "power_w": 1.44,
-            "IPC": 0.0 # halted state. no instructions executed.
-        },
-        {
-            "state": "C6",
-            "transition_time_s": 0.000133,
-            "target_residency_s": 0.0006,
-            "power_w": 0.1,
-            "IPC": 0.0
-        },
-        {
-            #https://www.techpowerup.com/cpu-specs/epyc-7763.c2373
-            "state": "package",
-            "tdp": 205.0,
-            "tdp_divided_per_core": 7.3, # 205/28
-            "c_state_power_at_tdp_per_core": 3.3, # 7.3 - 4.0 (assuming core operates at C0 state)
-            "package_overhead_per_core": 3.3
-        }
-    ]
+
+    return c_state_data[cpu_model]
+
+    # if cpu_model == 'dual-amd-rome-7742':
+    #     # relative to intel: TPD: 350 vs 225 ==> 1.56 times less power
+    #     c0_pw_w = 2.572 # 4.0 * 0.643 = 2.572
+    #     return [
+    #         {
+    #             "state": "C0",
+    #             "transition_time_s": 0.0,
+    #             "target_residency_s": 0.0,
+    #             "core_power_w": c0_pw_w,
+    #             "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
+    #             # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
+    #             # change according to request characteristics such as token count.
+    #         },
+    #         {
+    #             "state": "C1",
+    #             "transition_time_s": 2e-6,
+    #             "target_residency_s": 2e-6,
+    #             "core_power_w": c0_pw_w * 0.30,
+    #             "IPC": 0.0  # halted state. no instructions executed.
+    #         },
+    #         {
+    #             "state": "C6",
+    #             "transition_time_s": 0.000133,
+    #             "target_residency_s": 0.0006,
+    #             "core_power_w": c0_pw_w * 0.025,
+    #             "IPC": 0.0
+    #         },
+    #         # {
+    #         #     # https://www.techpowerup.com/cpu-specs/epyc-7763.c2373
+    #         #     "state": "package",
+    #         #     "tdp": 205.0,
+    #         #     "tdp_divided_per_core": 7.3,  # 205/28
+    #         #     "c_state_power_at_tdp_per_core": 3.3,  # 7.3 - 4.0 (assuming core operates at C0 state)
+    #         #     "package_overhead_per_core": 3.3
+    #         # }
+    #     ]
+    #
+    # elif cpu_model == 'dual-xeon-platinum-8480c':
+    #     c0_pw_w = 4.0
+    #     return [
+    #         {
+    #             "state": "C0",
+    #             "transition_time_s": 0.0,
+    #             "target_residency_s": 0.0,
+    #             "core_power_w": c0_pw_w,
+    #             "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
+    #             # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
+    #             # change according to request characteristics such as token count.
+    #         },
+    #         {
+    #             "state": "C1",
+    #             "transition_time_s": 2e-6,
+    #             "target_residency_s": 2e-6,
+    #             "core_power_w": c0_pw_w * 0.30, # ref: 'sleep well' paper
+    #             "IPC": 0.0  # halted state. no instructions executed.
+    #         },
+    #         {
+    #             "state": "C6",
+    #             "transition_time_s": 0.000133,
+    #             "target_residency_s": 0.0006,
+    #             "core_power_w": c0_pw_w * 0.025,
+    #             "IPC": 0.0
+    #         },
+    #         # {
+    #         #     # https://www.techpowerup.com/cpu-specs/epyc-7763.c2373
+    #         #     "state": "package",
+    #         #     "tdp": 205.0,
+    #         #     "tdp_divided_per_core": 7.3,  # 205/28
+    #         #     "c_state_power_at_tdp_per_core": 3.3,  # 7.3 - 4.0 (assuming core operates at C0 state)
+    #         #     "package_overhead_per_core": 3.3
+    #         # }
+    #     ]
+    #
+    # else:
+    #     raise ValueError(f"Unknown CPU model: {cpu_model}")
+
+
+'''specs
+DGX H100 - https://resources.nvidia.com/en-us-dgx-systems/ai-enterprise-dgx?xs=489753
+DGX A100 - https://images.nvidia.com/aem-dam/Solutions/Data-Center/nvidia-dgx-a100-datasheet.pdf
+'''
+machine_specs = {
+    'dual-xeon-platinum-8480c': {  # Dual Intel® Xeon® Platinum 8480C
+        'cores': 112,
+        'refresh_cycle_years': 3,
+        'cpu_tdp_w': 700,
+        'rest_of_pkg_power_w': 252,
+        'c0_power_w': 4.0,
+        'c6_power_w': 0.1,
+        # this is assumed to be a constant. rest_of_pkg_power_w + num_cores * c0_power = cpu_tdp_w
+        # C-state power values are approximated with Intel Skylake c-state idle power consumption
+    },
+    'dual-amd-rome-7742': {  # Dual AMD Rome 7742
+        'cores': 128,
+        'refresh_cycle_years': 3,
+        # https://mcomputers.cz/en/products-and-services/nvidia/dgx-systems/nvidia-dgx-a100/
+        'cpu_tdp_w': 450,
+        'rest_of_pkg_power_w': 117.2,
+        # idle_power is 130 W (https://www.anandtech.com/show/16778/amd-epyc-milan-review-part-2/3). assume idle is all cores at c6.
+        # num_cores * c6_power + rest_of_pkg_power_w = idle_power
+        'c0_power_w': 2.6,
+        # num_cores * c0_power + rest_of_pkg_power_w = cpu_tdp_w
+        'c1_power_w': 0.936,
+        # Approx. Intel skylake: C1 power is 0.36 times C6 power.
+        'c6_power_w': 0.1,
+        # approximated with Intel skylake C6
+    },
+}
+
 
 def get_core_power_for_model(model_name):
     data = {
@@ -164,7 +299,8 @@ def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_c
         latency_limit = latency_limit / number_of_tasks_waiting_on_io
     latency_limit = min(latency_limit, latency_limit_of_power_mgt_qos)
 
-    c_states = [state.value for state in CStates if state.value.state != "C0"] # C0 indicate active and executing instructions, which is not idle
+    c_states = [state.value for state in CStates if
+                state.value.state != "C0"]  # C0 indicate active and executing instructions, which is not idle
     chosen_c_state = list(filter(lambda x: x.state == "C1", c_states))[0]  # default to C1 = idle but online
     for c_state in c_states:
         target_residency = c_state.target_residency_s
@@ -179,7 +315,8 @@ def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_c
 
     return chosen_c_state
 
-def calculate_WTTF(time_s, c_state):
+
+def calculate_WTTF(cpu_model, time_s, c_state):
     """
     Placeholder function to calculate the Weighted Time to First Failure (WTTF) of the system [1].
 
@@ -188,7 +325,8 @@ def calculate_WTTF(time_s, c_state):
     Returns:
     - WTTF value.
     """
-    c_state = list(filter(lambda state: state["state"] == c_state, get_c_states()))[0]
+    #c_state = list(filter(lambda state: state["state"] == c_state, get_c_states(cpu_model=cpu_model)))[0]
+    c_state = get_c_states(cpu_model=cpu_model)[c_state]
     '''Calculation of WTTF
     WTTF = SUM(ipc * operating_frequency * delta_t)
     

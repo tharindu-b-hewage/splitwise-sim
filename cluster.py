@@ -91,8 +91,8 @@ class Cluster:
         for sku in self.servers:
             for server in self.servers[sku]:
                 cpu = [processor for processor in server.processors
-                                  if processor.processor_type == ProcessorType.CPU]
-                servers.append(cpu[0].core_activity_log)
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                servers.append((cpu.name, cpu.core_activity_log))
         return servers
 
     def run(self):
