@@ -1,4 +1,6 @@
+import math
 from enum import Enum
+from xml.dom.expatbuilder import FilterVisibilityController
 
 # approximate infinity value for the latency limit of the core wake-up time.
 # requirement is to have an upper bound for all core idle state transition times.
@@ -44,53 +46,53 @@ class CStates(Enum):
 c_state_data = {
     'dual-amd-rome-7742': {
         'C0': {
-                "state": "C0",
-                "transition_time_s": 0.0,
-                "target_residency_s": 0.0,
-                "core_power_w": 2.572,
-                "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
-                # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
-                # change according to request characteristics such as token count.
-            },
+            "state": "C0",
+            "transition_time_s": 0.0,
+            "target_residency_s": 0.0,
+            "core_power_w": 2.572,
+            "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
+            # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
+            # change according to request characteristics such as token count.
+        },
         'C1': {
-                "state": "C1",
-                "transition_time_s": 2e-6,
-                "target_residency_s": 2e-6,
-                "core_power_w": 2.572 * 0.30,
-                "IPC": 0.0  # halted state. no instructions executed.
-            },
+            "state": "C1",
+            "transition_time_s": 2e-6,
+            "target_residency_s": 2e-6,
+            "core_power_w": 2.572 * 0.30,
+            "IPC": 0.0  # halted state. no instructions executed.
+        },
         'C6': {
-                "state": "C6",
-                "transition_time_s": 0.000133,
-                "target_residency_s": 0.0006,
-                "core_power_w": 2.572 * 0.025,
-                "IPC": 0.0
-            },
+            "state": "C6",
+            "transition_time_s": 0.000133,
+            "target_residency_s": 0.0006,
+            "core_power_w": 2.572 * 0.025,
+            "IPC": 0.0
+        },
     },
     'dual-xeon-platinum-8480c': {
         'C0': {
-                "state": "C0",
-                "transition_time_s": 0.0,
-                "target_residency_s": 0.0,
-                "core_power_w": 4.0,
-                "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
-                # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
-                # change according to request characteristics such as token count.
-            },
+            "state": "C0",
+            "transition_time_s": 0.0,
+            "target_residency_s": 0.0,
+            "core_power_w": 4.0,
+            "IPC": 1.0  # indicative value, not the actual. We approximate it to 1.0 for active state. In reality,
+            # the value depends on the workload. With inference, CPU workload is almost homogeneous, as it does not
+            # change according to request characteristics such as token count.
+        },
         'C1': {
-                "state": "C1",
-                "transition_time_s": 2e-6,
-                "target_residency_s": 2e-6,
-                "core_power_w": 4.0 * 0.30, # ref: 'sleep well' paper
-                "IPC": 0.0  # halted state. no instructions executed.
+            "state": "C1",
+            "transition_time_s": 2e-6,
+            "target_residency_s": 2e-6,
+            "core_power_w": 4.0 * 0.30,  # ref: 'sleep well' paper
+            "IPC": 0.0  # halted state. no instructions executed.
         },
         'C6': {
-                "state": "C6",
-                "transition_time_s": 0.000133,
-                "target_residency_s": 0.0006,
-                "core_power_w": 4.0 * 0.025,
-                "IPC": 0.0
-            },
+            "state": "C6",
+            "transition_time_s": 0.000133,
+            "target_residency_s": 0.0006,
+            "core_power_w": 4.0 * 0.025,
+            "IPC": 0.0
+        },
     }
 }
 
@@ -325,7 +327,7 @@ def calculate_WTTF(cpu_model, time_s, c_state):
     Returns:
     - WTTF value.
     """
-    #c_state = list(filter(lambda state: state["state"] == c_state, get_c_states(cpu_model=cpu_model)))[0]
+    # c_state = list(filter(lambda state: state["state"] == c_state, get_c_states(cpu_model=cpu_model)))[0]
     c_state = get_c_states(cpu_model=cpu_model)[c_state]
     '''Calculation of WTTF
     WTTF = SUM(ipc * operating_frequency * delta_t)
@@ -339,3 +341,140 @@ def calculate_WTTF(cpu_model, time_s, c_state):
     '''
     wttf = c_state['IPC'] * 1.0 * time_s
     return wttf
+
+
+ATLAS_PARAMS = {
+    '130nm': {
+        'Vdd': 1.3,
+        'Vth': 0.2,
+        't_ox': 2.25
+    },
+    '45nm': {
+        'Vdd': 1.1,
+        'Vth': 0.2,
+        't_ox': 1.75
+    },
+    '32nm': {
+        'Vdd': 1.0,
+        'Vth': 0.22,
+        't_ox': 1.65
+    },
+    '22nm': {
+        'Vdd': 0.9,
+        'Vth': 0.25,
+        't_ox': 1.4
+    },
+    '14nm': {
+        'Vdd': 0.8,
+        'Vth': 0.31,
+        't_ox': 0.9
+    },
+}
+
+
+def calc_delta_vth(t_elapsed_time=0.0, temp_kelvin=300):
+    """
+    Calculate the shift in threshold voltage.
+
+    Source: ATLAS paper.
+    """
+
+    lithography = '22nm'
+
+    Y_stress_mv = 50  # Stress voltage in mV for NBTI
+    n = 0.17
+    K_B_boltzman_constant = 8.617e-5
+    E_0 = 0.189  # eV
+    B = 0.075  # nm/V
+    t_ox = ATLAS_PARAMS[lithography]['t_ox']
+    Vdd = ATLAS_PARAMS[lithography]['Vdd']
+
+    A_T_Vdd = (math.exp(-E_0 / (K_B_boltzman_constant * temp_kelvin))
+               * math.exp((B * Vdd) / (t_ox * K_B_boltzman_constant * temp_kelvin)))
+
+    '''
+    SUIT paper: "modern sub 20 nm FinFET transistors degrades by approximately 15 % over a time span of 10 years at >100 C"
+    Solving the below equation for 22nm lithography: running the core at 100 celcius for 10 years, the increase of 
+    delta_vth is 0.15. Using that, k = 0.18026
+    '''
+    k_fitting_param = 0.18026
+    delta_vth = k_fitting_param * A_T_Vdd * math.pow(Y_stress_mv, n) * math.pow(t_elapsed_time, n)
+
+    return delta_vth
+
+
+def calc_aged_freq(initial_freq, delta_vth):
+    """
+    Calculate the core frequency w.r.t. aging. initial frequency is the process variation induced initial frequency of
+    the core.
+    """
+    lithography = '22nm'
+    Vdd = ATLAS_PARAMS[lithography]['Vdd']
+    Vth = ATLAS_PARAMS[lithography]['Vth']
+
+    return initial_freq * (1 - (delta_vth / (Vdd - Vth)))
+
+
+import numpy as np
+
+
+def generate_initial_frequencies(n_cores=128):
+    """
+    Generate a set of initial frequency values for the cores.
+
+    Parameters:
+    - N_cores (int): Number of cores.
+    - N_chip (int): Size of the grid (N_chip x N_chip).
+    - E (float): Parameter in the exponential function for the correlation.
+    - frequency_factor (float): Factor to multiply with the minimum value.
+
+    Returns:
+    - initial_frequency_values (list): List of initial frequency values for each core.
+    """
+
+    frequencies = []
+    for num_cores in range(n_cores):
+        '''
+        B. Raghunathan, Y. Turakhia, S. Garg and D. Marculescu, "Cherry-picking: Exploiting process variations in 
+        dark-silicon homogeneous chip multi-processors," 2013 Design, Automation & Test in Europe Conference & Exhibition 
+        (DATE), Grenoble, France, 2013, pp. 39-44, doi: 10.7873/DATE.2013.023.,
+        '''
+        # Grid size
+        grid_size = 100
+
+        # Nominal frequency for each random variable (mean of the Gaussian distribution)
+        nominal_frequency = 1.0  # You can adjust this value
+
+        # Standard deviation of the Gaussian distribution
+        std_dev = 0.1 * nominal_frequency
+
+        # Compute the correlation parameter for spatial decay
+        distance_threshold = 50
+        target_correlation = 0.01
+        neg_param = -np.log(target_correlation) / distance_threshold
+
+        # Generate a grid of points
+        x = np.arange(grid_size)
+        y = np.arange(grid_size)
+        xx, yy = np.meshgrid(x, y)
+        grid_points = np.c_[xx.ravel(), yy.ravel()]
+
+        # Compute the correlation matrix
+        num_points = grid_points.shape[0]
+        correlation_matrix = np.zeros((num_points, num_points))
+
+        for i in range(num_points):
+            for j in range(num_points):
+                distance = np.linalg.norm(grid_points[i] - grid_points[j])
+                correlation_matrix[i, j] = np.exp(neg_param * distance)
+
+        # Generate the Gaussian random variables with spatial correlation
+        mean = np.full(num_points, nominal_frequency)
+        covariance_matrix = correlation_matrix * (std_dev ** 2)
+        samples = np.random.multivariate_normal(mean, covariance_matrix, size=1).reshape(grid_size, grid_size)
+
+        # Invert the sampled values and find the minimum inverted value
+        inverted_samples = 1 / samples
+        aged_frequency = 1 * np.min(inverted_samples) # we set technology dependent parameter to 1
+        frequencies.append(aged_frequency)
+    return frequencies
