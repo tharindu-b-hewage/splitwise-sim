@@ -179,8 +179,9 @@ class Instance():
                                      batch=[task],
                                      instance=self)
 
-        core_id, core_overhead = self.cpu.assign_core_to_cpu_task(task=CpuTaskType.RUN_TASK)
-        schedule_event(self.overheads.run + task.duration + core_overhead,
+        core_id, core_overhead, scaling_factor = self.cpu.assign_core_to_cpu_task(task=CpuTaskType.RUN_TASK)
+        task_runtime = task.duration * scaling_factor
+        schedule_event(self.overheads.run + task_runtime + core_overhead,
                        lambda instance=self,task=task: instance.task_completion(task, core_id=core_id))
 
     def preempt_task(self, task):
@@ -538,9 +539,10 @@ class ORCAInstance(Instance):
                 raise ValueError(f"Unexpected task state {task.state} in start_iteration")
 
         # assign the cpu core that handles the iteration
-        core_id, core_overhead = self.cpu.assign_core_to_cpu_task(task=CpuTaskType.INFERENCE_ITERATION, override_task_description=self.application.model_architecture)
+        core_id, core_overhead, scaling_factor = self.cpu.assign_core_to_cpu_task(task=CpuTaskType.INFERENCE_ITERATION, override_task_description=self.application.model_architecture)
+        itr_duration = self.iteration_duration * scaling_factor
         self.completion_events["iteration"] = schedule_event(
-            (self.iteration_duration * self.num_contiguous_iterations) + core_overhead,
+            (itr_duration * self.num_contiguous_iterations) + core_overhead,
                         lambda instance=self: instance.complete_iteration(core_id=core_id))
 
     def pause_iteration(self):

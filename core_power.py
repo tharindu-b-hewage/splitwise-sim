@@ -2,6 +2,8 @@ import math
 from enum import Enum
 from xml.dom.expatbuilder import FilterVisibilityController
 
+from processor import Temperatures
+
 # approximate infinity value for the latency limit of the core wake-up time.
 # requirement is to have an upper bound for all core idle state transition times.
 # we set to an hour, because all core transition times are practically less than that.
@@ -14,13 +16,15 @@ class CState:
     transition_time_s: float
     power_w: float
     p_state: str
+    temp: float
 
-    def __init__(self, state, target_residency_s, transition_time_s, power_w, p_state):
+    def __init__(self, state, target_residency_s, transition_time_s, power_w, p_state, temp):
         self.state = state
         self.target_residency_s = target_residency_s
         self.transition_time_s = transition_time_s
         self.power_w = power_w
         self.p_state = p_state
+        self.temp = temp
 
     def __str__(self):
         return (
@@ -28,6 +32,7 @@ class CState:
             f"target_residency_s={self.target_residency_s}, "
             f"transition_time_s={self.transition_time_s}, "
             f"power_w={self.power_w})"
+            f"temp_c={self.temp})"
         )
 
 
@@ -38,9 +43,9 @@ class CStates(Enum):
     2022, pp. 835-850, doi: 10.1109/MICRO56248.2022.00063. keywords: {Degradation;Program processors;Microarchitecture;
     Coherence;Market research;Energy efficiency;Generators;Energy Efficiency;power management;Latency Sensitive applications},
     """
-    C0 = CState('C0', 0.0, 0.0, 4.0, 'P1')  # active and executing instructions at highest performance state
-    C1 = CState('C1', 2e-6, 2e-6, 1.44, 'P1')  # idle but online
-    C6 = CState('C6', 0.0006, 0.000133, 0.1, p_state=None)  # deep sleep state
+    C0 = CState('C0', 0.0, 0.0, 4.0, 'P1', temp=Temperatures.C0_POLL)  # active and executing instructions at highest performance state
+    C1 = CState('C1', 2e-6, 2e-6, 1.44, 'P1', temp=Temperatures.C0_POLL)  # idle but online
+    C6 = CState('C6', 0.0006, 0.000133, 0.1, p_state=None, temp=Temperatures.C6)  # deep sleep state
 
 
 c_state_data = {
@@ -419,19 +424,6 @@ import numpy as np
 
 
 def generate_initial_frequencies(n_cores=128):
-    """
-    Generate a set of initial frequency values for the cores.
-
-    Parameters:
-    - N_cores (int): Number of cores.
-    - N_chip (int): Size of the grid (N_chip x N_chip).
-    - E (float): Parameter in the exponential function for the correlation.
-    - frequency_factor (float): Factor to multiply with the minimum value.
-
-    Returns:
-    - initial_frequency_values (list): List of initial frequency values for each core.
-    """
-
     frequencies = []
     for num_cores in range(n_cores):
         '''
@@ -443,7 +435,7 @@ def generate_initial_frequencies(n_cores=128):
         grid_size = 100
 
         # Nominal frequency for each random variable (mean of the Gaussian distribution)
-        nominal_frequency = 1.0  # You can adjust this value
+        nominal_frequency = 1/(2.25 * math.pow(10, 9))  # You can adjust this value
 
         # Standard deviation of the Gaussian distribution
         std_dev = 0.1 * nominal_frequency

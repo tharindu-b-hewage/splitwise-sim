@@ -80,8 +80,9 @@ class Executor():
         task.executor = self
         self.submitted.append(task)
 
-        core_id_for_task_arrival, core_overhead = instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.HANDLE_TASK_ARRIVAL)
+        core_id_for_task_arrival, core_overhead, scaling_factor = instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.HANDLE_TASK_ARRIVAL)
         task_runtime = CpuTaskType.HANDLE_TASK_ARRIVAL.value["overhead_time"]
+        task_runtime = task_runtime * scaling_factor
         schedule_event(self.overheads.submit_task + task_runtime + core_overhead,
                        lambda instance=instance,task=task: \
                            instance.task_arrival(task, core_id_for_task_arrival_function=core_id_for_task_arrival))

@@ -104,8 +104,8 @@ class Link():
         self.completed_queue.append(flow)
         flow.executor.finish_flow(flow, self)
 
-        core_for_flow_completion_notify, core_overhead = flow.src.cpu.assign_core_to_cpu_task(task=CpuTaskType.FLOW_COMPLETION)
-        task_runtime = CpuTaskType.FLOW_COMPLETION.value["overhead_time"]
+        core_for_flow_completion_notify, core_overhead, scaling_factor = flow.src.cpu.assign_core_to_cpu_task(task=CpuTaskType.FLOW_COMPLETION)
+        task_runtime = CpuTaskType.FLOW_COMPLETION.value["overhead_time"] * scaling_factor
         if flow.notify:
             schedule_event(task_runtime + core_overhead, lambda flow=flow: flow.src.notify_flow_completion(flow=flow, core_for_flow_completion_notify=core_for_flow_completion_notify))
 
