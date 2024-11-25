@@ -78,29 +78,31 @@ def core_id_sampler(df, bw_adjust=0.1):
         yield int(np.round(kde.resample(1)[0]))
 
 
-def allocate_cores_argane_swing_dst(available_cores, max_retries):
+def task_schedule_ubuntu(cpu_cores, max_retries):
     """Implements core assignment behavior observed in the energy inference project [1].
 
     This function collects telemetry data from inference tasks [1] to observe CPU core residency. Based on the typical
     operating system state of an inference server, it creates a probabilistic model to replicate core assignment behavior.
 
+    platform: https://www.lcrc.anl.gov/systems/swing
+
     [1] https://github.com/grantwilkins/energy-inference.git
     """
-    free_core_ids = [core.id for core in available_cores if core.task is None]
+    free_core_ids = [core.id for core in cpu_cores if core.task is None]
     if len(free_core_ids) == 0:
         raise ValueError("No free cores are available")
 
     core_id = None
     retries = 0
     while core_id is None:
-        core_id = get_core_id_of_argane_swing(num_cores=len(available_cores))
+        core_id = get_core_id_of_argane_swing(num_cores=len(cpu_cores))
         if core_id not in free_core_ids:
             core_id = None
             retries += 1
         if retries >= max_retries:
             core_id = free_core_ids[0]
 
-    return list(filter(lambda core: core.id == core_id, available_cores))[0]
+    return list(filter(lambda core: core.id == core_id, cpu_cores))[0]
 
 
 def get_core_id_of_argane_swing(num_cores):

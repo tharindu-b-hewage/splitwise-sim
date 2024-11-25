@@ -11,6 +11,7 @@ import pandas as pd
 def get_cpu_metrics(data_path, sim_end_time):
     cls_energy = 0.0
     cls_wttf_cvs = []
+    cls_core_health_cvs = []
     cls_max_task_throughputs = []
     for m_file_name in os.listdir(data_path):
         if 'cpu_usage' not in m_file_name:
@@ -32,30 +33,41 @@ def get_cpu_metrics(data_path, sim_end_time):
 
         m_energy = 0.0
         c_wttfs = []
+        core_healths = []
+        next_row = None
         for c_id in range(c_count):
             c_data = m[m['id'] == c_id].sort_values('clock', ascending=True)
             clk = 0.0
-            c_state = CStates.C1.value.state
+            c_state = 'C1'
+            freq = 2.25
             c_wttf = 0.0
             c_energy = 0.0
             for idx, row in c_data.iterrows():
+
                 next_clk = row['clock']
                 next_c_state = row['c_state']
+                next_freq = row['freq_hz']
 
                 # update for the time period
-                energy, wttf = calculate_metrics(c_state, c_states, clk, cpu_n, next_clk)
+                energy, wttf = calculate_metrics(c_state, c_states, clk, cpu_n, next_clk, freq)
                 c_energy += energy
                 c_wttf += wttf
 
                 # move to next time period
                 clk = next_clk
                 c_state = next_c_state
+                next_row = row
+                freq = next_freq
 
             # update at the sim completion. we need this to account for time from last state to sim end
             next_clk = sim_end_time
-            energy, wttf = calculate_metrics(c_state, c_states, clk, cpu_n, next_clk)
+            energy, wttf = calculate_metrics(c_state, c_states, clk, cpu_n, next_clk, freq)
             c_energy += energy
             c_wttf += wttf
+
+            # calculate the core health metric
+            core_health_at_end = next_row['health']
+            core_healths.append(core_health_at_end)
 
             # update per core metric collections
             c_wttfs.append(c_wttf)
@@ -63,7 +75,10 @@ def get_cpu_metrics(data_path, sim_end_time):
 
         # update metric collection
         # calculate coefficient of variation of wttf
-        cls_wttf_cvs.append(np.std(c_wttfs) / np.mean(c_wttfs))
+        wttf_mean = np.mean(c_wttfs)
+        if wttf_mean > 0: # if cores were used at any point
+            cls_wttf_cvs.append(np.std(c_wttfs) / np.mean(c_wttfs))
+        cls_core_health_cvs.append(np.std(core_healths) / np.mean(core_healths))
         cls_energy += m_energy
 
         # parallel cpu tasks calculation
@@ -73,13 +88,17 @@ def get_cpu_metrics(data_path, sim_end_time):
 
 
 
-    return np.percentile(cls_wttf_cvs, 90), cls_energy, np.percentile(cls_max_task_throughputs, 90), np.max(
+    return np.percentile(cls_core_health_cvs, 90), np.percentile(cls_wttf_cvs, 90), cls_energy, np.percentile(cls_max_task_throughputs, 90), np.max(
         cls_max_task_throughputs)
 
 
-def calculate_metrics(c_state, c_states, clk, cpu_n, next_clk):
+def calculate_metrics(c_state, c_states, clk, cpu_n, next_clk, freq):
     t_delta = next_clk - clk
-    return c_states[c_state]['core_power_w'] * t_delta, calculate_WTTF(cpu_model=cpu_n, c_state=c_state, time_s=t_delta)
+
+    energy = c_states[c_state]['core_power_w'] * t_delta
+    wttf = calculate_WTTF(cpu_model=cpu_n, c_state=c_state, time_s=t_delta, freq=freq)
+
+    return energy, wttf
 
 
 def get_parsed_data(experiment_root):
@@ -105,7 +124,7 @@ def get_parsed_data(experiment_root):
                 app_df = pd.read_csv(os.path.join(exp_data_root, 'summary.csv'))[
                     ['prompt_sizes_p90', 'token_sizes_p90', 'ttft_times_p90', 'tbt_times_p90', 'response_times_p90',
                      'queue_times_p90']]
-                p90_cv_server_cpu_wttf, energy_cluster_cpu, p90_server_cpu_max_parallel_cpu_tasks, max_server_cpu_max_parallel_cpu_tasks = get_cpu_metrics(
+                p90_cv_server_cpu_health, p90_cv_server_cpu_wttf, energy_cluster_cpu, p90_server_cpu_max_parallel_cpu_tasks, max_server_cpu_max_parallel_cpu_tasks = get_cpu_metrics(
                     os.path.join(exp_data_root, 'cpu_usage'), sim_end_time=sim_time)
 
                 data.append({
@@ -120,6 +139,7 @@ def get_parsed_data(experiment_root):
                     'queue_times_p90': app_df['queue_times_p90'].mean(),
                     # there is only one row in the app_df. So, mean is the value itself
                     'core_wttf_cv_p90': p90_cv_server_cpu_wttf,
+                    'core_health_cv_p90': p90_cv_server_cpu_health,
                     'cluster_energy_j': energy_cluster_cpu,
                     'cpu_tasks_throughput_p90': p90_server_cpu_max_parallel_cpu_tasks,
                     'cpu_tasks_throughput_max': max_server_cpu_max_parallel_cpu_tasks
@@ -130,8 +150,8 @@ def get_parsed_data(experiment_root):
     return df
 
 
-df = get_parsed_data(experiment_root="/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/simulations")
-#df = get_parsed_data(experiment_root="/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/debug")
+#df = get_parsed_data(experiment_root="/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/simulations")
+df = get_parsed_data(experiment_root="/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/debug")
 
 data_file = './notebooks/helper/parsed_data.csv'
 # delete file if exists

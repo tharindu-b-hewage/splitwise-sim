@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S, \
-    generate_initial_frequencies, calc_delta_vth, calc_aged_freq
-from core_residency import allocate_cores_argane_swing_dst
-from instance import Instance
+    generate_initial_frequencies, calc_delta_vth, calc_aged_freq, Temperatures
+from core_residency import task_schedule_ubuntu
+from instance import Instance, CpuTaskType
 from simulator import clock
 
 # ServerlessLLM: With optimization, LLM serving is done with 4 cores. In their setup, 4 cores achieved the maximum
@@ -63,7 +63,8 @@ class Core:
             'last_idle_durations': self.last_idle_durations,
             'last_idle_set_time': self.last_idle_set_time,
             'temp_c': self.temp,
-            'freq_hz': self.freq,
+            'freq': self.freq,
+            'health': self.freq / self.freq_0,
         }
 
 
@@ -71,12 +72,6 @@ class ProcessorType(IntEnum):
     DEFAULT = 0
     CPU = 1
     GPU = 2
-
-
-class Temperatures(IntEnum):
-    C0_RTEVAL = 54
-    C0_POLL = 51.08
-    C6 = 48
 
 
 @dataclass(kw_only=True)
@@ -174,6 +169,55 @@ class Processor():
         pass
 
 
+def task_schedule_zhao23(cpu_cores, max_retries):
+    """Zhao et al. 2023:
+    Proposes a task scheduling approach that can be enforced at the resource management level.
+    We employ it at the cloud orchestration level. The idea behind the approach is, 'the OS can migrate and
+     swap affinitized threads from one core that has significantly aged or thermally loaded to another core'. It requires
+     aging of the core and move the tasks, which essentially signals to balance the load across the cores according
+     to the age status. Since inference tasks are short-lived, we do not migrate tasks, but at the task-to-core allocation
+     level, we select the cores to balance the load according to the health.
+     """
+    selected_core = None
+    for core in cpu_cores:
+        if core.task is not None: # avoid already allocated cores.
+            continue
+
+        if selected_core is None: # if a core has not chosen yet, select the first core.
+            selected_core = core
+            continue
+
+        # select the core with the highest health.
+        selected_core_health = selected_core.freq / selected_core.freq_0
+        core_health = core.freq / core.freq_0
+        if core_health > selected_core_health:
+            selected_core = core
+
+    # if none, pick the first free core.
+    if selected_core is None:
+        for core in cpu_cores:
+            if core.task is None:
+                selected_core = core
+                break
+
+    return selected_core
+
+
+def task_schedule_proposed(cpu_cores, max_retries):
+    selected_core = None
+
+    # todo: implement the logic for our algorithm.
+
+    # if none, pick the first free core.
+    if selected_core is None:
+        for core in cpu_cores:
+            if core.task is None:
+                selected_core = core
+                break
+
+    return selected_core
+
+
 @dataclass(kw_only=True)
 class CPU(Processor):
     """
@@ -202,6 +246,8 @@ class CPU(Processor):
             6.  [Pending] Implement the proposed technique (Sleep/Wake sensitive to request rate. Dynamic core-set selection based
             on relative frequency(relative health)). Verify/fix plots.
 
+    todo: Identified issues:
+
     Attributes:
         processor_type (ProcessorType): The type of the Processor.
         cpu_cores (list[bool]): The logical cores of the CPU. Boolean state indicates if the core is in use.
@@ -218,7 +264,7 @@ class CPU(Processor):
 
         # initial temperature is 54 degrees celcius. Data modelled after experiments from Green Core testbed.
         self.cpu_cores = [Core(id=idx, f_init=init_fq, temp_init=Temperatures.C0_POLL) for idx, init_fq in
-                          process_variation_induced_initial_core_fq]
+                          enumerate(process_variation_induced_initial_core_fq)]
 
     def assign_core_to_cpu_task(self, task, override_task_description=None):
         assigned_core, time_to_wake = self.get_a_core_to_assign()
@@ -281,10 +327,29 @@ class CPU(Processor):
         assigned_core.freq = aged_freq
 
     def get_a_core_to_assign(self):
-        assigned_core = allocate_cores_argane_swing_dst(available_cores=self.cpu_cores, max_retries=self.core_count)
+
+        """Algorithm assigning a core to a task"""
+        #assigned_core = task_schedule_ubuntu(cpu_cores=self.cpu_cores, max_retries=self.core_count)
+        assigned_core = task_schedule_zhao23(cpu_cores=self.cpu_cores, max_retries=self.core_count)
+        #assigned_core = task_schedule_proposed(cpu_cores=self.cpu_cores, max_retries=self.core_count)
+
         transition_latency = assigned_core.c_state.transition_time_s
         assigned_core.c_state = CStates.C1.value  # set core to idle
         return assigned_core, transition_latency
+
+    def trigger_state_update(self):
+        """update states at the end of the simulation"""
+        '''
+        Releasing a task from the core updates multiple stats, such as aging. In the simulation, core status is 
+        only updated either a task is assigned or released. However, in cases such as a task was never assigned,
+        or the time between task release and end of the simulation, we need to still update stats, such as the 
+        aging occur due to idle temperature. So we assign a completion task and release the core.
+        '''
+        for _ in self.cpu_cores:
+            self.assign_core_to_cpu_task(task=CpuTaskType.SIM_STATUS_UPDATE_TASK) # assign to next free core.
+        for core in self.cpu_cores:
+            self.release_core_from_cpu_task(core.id) # release from each core.
+
 
     def log_cpu_state(self, core=None, time_to_wake=None):
         if core is None:

@@ -116,11 +116,15 @@ class TraceSimulator(Simulator):
         self.schedule(0, self.router.run)
         self.schedule(0, self.arbiter.run)
 
+        # add a status entry at the beginning in the cpu usage log files. this is needed to process the collected data.
+        self.cluster.trigger_state_update()
+
         # run simulation
         super().run()
         self.logger.info(f"{self.time},end")
         logging.info(f"TraceSimulator completed at {self.time}")
 
+        # below also triggers a status update call, such that each cpu core logs their status at the end of the simulation.
         self.save_results()
 
     def save_results(self, detailed=True):

@@ -92,8 +92,16 @@ class Cluster:
             for server in self.servers[sku]:
                 cpu = [processor for processor in server.processors
                                   if processor.processor_type == ProcessorType.CPU][0]
+                cpu.trigger_state_update()
                 servers.append((cpu.name, cpu.core_activity_log))
         return servers
+
+    def trigger_state_update(self):
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                cpu.trigger_state_update()
 
     def run(self):
         """

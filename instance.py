@@ -658,6 +658,7 @@ class CpuTaskType(Enum):
     INFERENCE_ITERATION = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "inference iteration"}
     RUN_TASK = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "run task"}
     FLOW_COMPLETION = {"overhead_time": LINUX_RR_PROCESS_TIMESLICE, "info": "flow completion"}
+    SIM_STATUS_UPDATE_TASK = {"overhead_time": 0.0, "info": "status update task for simulation"}
 
 class CpuTask:
     task: CpuTaskType

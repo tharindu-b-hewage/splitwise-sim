@@ -1,8 +1,6 @@
 import math
-from enum import Enum
+from enum import Enum, IntEnum
 from xml.dom.expatbuilder import FilterVisibilityController
-
-from processor import Temperatures
 
 # approximate infinity value for the latency limit of the core wake-up time.
 # requirement is to have an upper bound for all core idle state transition times.
@@ -36,6 +34,12 @@ class CState:
         )
 
 
+class Temperatures(IntEnum):
+    C0_RTEVAL = 54
+    C0_POLL = 51.08
+    C6 = 48
+
+
 class CStates(Enum):
     """Server CPU C-states from Table 1 of [1].
     [1] J. H. Yahya et al., "AgileWatts: An Energy-Efficient CPU Core Idle-State Architecture for Latency-Sensitive
@@ -43,7 +47,8 @@ class CStates(Enum):
     2022, pp. 835-850, doi: 10.1109/MICRO56248.2022.00063. keywords: {Degradation;Program processors;Microarchitecture;
     Coherence;Market research;Energy efficiency;Generators;Energy Efficiency;power management;Latency Sensitive applications},
     """
-    C0 = CState('C0', 0.0, 0.0, 4.0, 'P1', temp=Temperatures.C0_POLL)  # active and executing instructions at highest performance state
+    C0 = CState('C0', 0.0, 0.0, 4.0, 'P1',
+                temp=Temperatures.C0_POLL)  # active and executing instructions at highest performance state
     C1 = CState('C1', 2e-6, 2e-6, 1.44, 'P1', temp=Temperatures.C0_POLL)  # idle but online
     C6 = CState('C6', 0.0006, 0.000133, 0.1, p_state=None, temp=Temperatures.C6)  # deep sleep state
 
@@ -323,7 +328,7 @@ def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_c
     return chosen_c_state
 
 
-def calculate_WTTF(cpu_model, time_s, c_state):
+def calculate_WTTF(cpu_model, time_s, c_state, freq):
     """
     Placeholder function to calculate the Weighted Time to First Failure (WTTF) of the system [1].
 
@@ -344,7 +349,7 @@ def calculate_WTTF(cpu_model, time_s, c_state):
     operating_frequency: To isolate the effect of usage, we do not delve into the effect of dynamic frequency. We assume
     servers are tuned to provide a constant performance via a constant cpu frequency.
     '''
-    wttf = c_state['IPC'] * 1.0 * time_s
+    wttf = c_state['IPC'] * freq * time_s
     return wttf
 
 
@@ -425,48 +430,41 @@ import numpy as np
 
 def generate_initial_frequencies(n_cores=128):
     frequencies = []
+    CORE_FINE_GRID_LENGTH = 10
     for num_cores in range(n_cores):
-        '''
-        B. Raghunathan, Y. Turakhia, S. Garg and D. Marculescu, "Cherry-picking: Exploiting process variations in 
-        dark-silicon homogeneous chip multi-processors," 2013 Design, Automation & Test in Europe Conference & Exhibition 
-        (DATE), Grenoble, France, 2013, pp. 39-44, doi: 10.7873/DATE.2013.023.,
-        '''
-        # Grid size
-        grid_size = 100
+        # Constants
+        f_nominal = 2.25  # GHz
+        mu_p = 1.0  # Mean of process parameter
+        sigma_p = 0.1 * mu_p  # Standard deviation (10% of mu_p)
+        alpha = 9.21 / CORE_FINE_GRID_LENGTH  # Spatial correlation parameter, assuming L_die = 100
 
-        # Nominal frequency for each random variable (mean of the Gaussian distribution)
-        nominal_frequency = 1/(2.25 * math.pow(10, 9))  # You can adjust this value
+        # Core grid dimensions and critical path cell set
+        N_chip = CORE_FINE_GRID_LENGTH  # 100x100 grid
+        N_cp = 10  # Number of critical paths per core
+        critical_path_cells = np.random.choice(range(N_chip ** 2), N_cp,
+                                               replace=False)  # Random selection of cells for SCP
 
-        # Standard deviation of the Gaussian distribution
-        std_dev = 0.1 * nominal_frequency
+        # Generate process parameters
+        grid = np.random.normal(mu_p, sigma_p, (N_chip, N_chip))  # Gaussian process parameters
 
-        # Compute the correlation parameter for spatial decay
-        distance_threshold = 50
-        target_correlation = 0.01
-        neg_param = -np.log(target_correlation) / distance_threshold
+        # Spatial correlation modeling
+        correlation_matrix = np.zeros((N_chip, N_chip))
+        for i in range(N_chip):
+            for j in range(N_chip):
+                for k in range(N_chip):
+                    for l in range(N_chip):
+                        dist = np.sqrt((i - k) ** 2 + (j - l) ** 2)
+                        correlation_matrix[i, j] = np.exp(-alpha * dist)
 
-        # Generate a grid of points
-        x = np.arange(grid_size)
-        y = np.arange(grid_size)
-        xx, yy = np.meshgrid(x, y)
-        grid_points = np.c_[xx.ravel(), yy.ravel()]
+        # Adjust process parameters for spatial correlation
+        for i in range(N_chip):
+            for j in range(N_chip):
+                grid[i, j] += np.random.normal(0, sigma_p) * correlation_matrix[i, j]
 
-        # Compute the correlation matrix
-        num_points = grid_points.shape[0]
-        correlation_matrix = np.zeros((num_points, num_points))
+        # Calculate f_MAX for a core
+        critical_path_values = [1 / grid[cell // N_chip, cell % N_chip] for cell in critical_path_cells]
+        f_max = f_nominal * (mu_p / min(critical_path_values))
 
-        for i in range(num_points):
-            for j in range(num_points):
-                distance = np.linalg.norm(grid_points[i] - grid_points[j])
-                correlation_matrix[i, j] = np.exp(neg_param * distance)
-
-        # Generate the Gaussian random variables with spatial correlation
-        mean = np.full(num_points, nominal_frequency)
-        covariance_matrix = correlation_matrix * (std_dev ** 2)
-        samples = np.random.multivariate_normal(mean, covariance_matrix, size=1).reshape(grid_size, grid_size)
-
-        # Invert the sampled values and find the minimum inverted value
-        inverted_samples = 1 / samples
-        aged_frequency = 1 * np.min(inverted_samples) # we set technology dependent parameter to 1
-        frequencies.append(aged_frequency)
+        # Output sampled f_MAX
+        frequencies.append(float(f_max))
     return frequencies
