@@ -82,6 +82,20 @@ class Cluster:
                        lambda self=self, power=self.total_power: \
                            self.power_telemetry(0))
 
+    def task_logs(self):
+        task_logs = []
+        # self.servers is a dictionary of lists of servers. We need to iterate over the lists.
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                cpu.trigger_state_update()
+                task_logs.append((cpu.name, {
+                    "tasks_total": cpu.total_task_count_log,
+                    "tasks_oversubscribed": cpu.oversubscribed_task_count_log,
+                }))
+        return task_logs
+
     def cpu_core_usage(self):
         """
         Returns the CPU core usage of the cluster.

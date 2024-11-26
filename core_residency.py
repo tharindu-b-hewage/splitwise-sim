@@ -100,7 +100,10 @@ def task_schedule_linux(cpu_cores, max_retries):
             core_id = None
             retries += 1
         if retries >= max_retries:
-            core_id = free_core_ids[0]
+            if len(free_core_ids) > 0:
+                core_id = free_core_ids[0]
+            else:
+                return None
 
     return list(filter(lambda core: core.id == core_id, cpu_cores))[0]
 

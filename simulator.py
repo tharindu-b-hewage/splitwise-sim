@@ -166,6 +166,11 @@ class TraceSimulator(Simulator):
             name, usage = cpu_usage
             utils.save_dict_as_csv(usage, f"cpu_usage/cpu_usage_{name}_{index}.csv")
 
+        task_logs = self.cluster.task_logs()
+        for index, log in enumerate(task_logs):
+            machine_name, data = log
+            utils.save_dict_as_csv(data, f"cpu_usage/cpu_usage_{machine_name}_{index}.csv")
+
 
 # Convenience functions for simulator object
 
