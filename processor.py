@@ -5,7 +5,7 @@ from enum import IntEnum
 
 from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S, \
     generate_initial_frequencies, calc_delta_vth, calc_aged_freq, Temperatures
-from core_residency import task_schedule_ubuntu
+from core_residency import task_schedule_linux
 from instance import Instance, CpuTaskType
 from simulator import clock
 
@@ -15,6 +15,7 @@ from simulator import clock
 CORE_IS_FREE = ''
 ENABLE_DEBUG_LOGS = False
 
+CPU_CONFIGS = None
 
 # LOGICAL_CORE_COUNT = 256
 
@@ -240,9 +241,8 @@ class CPU(Processor):
             2.  [implemented] Implement the over time aging: temperature induced frequency drop: done, needs testing
             3.  [implemented] Implement the frequency degreation impact to LLM inference. Each executing task now takes more time,
                 so increased overhead time. : done, needs testing
-            4.  [Pending] Run the vanilla system and plot the frequency degregation over time (aging), and impact to app metrics: TTFT, TBT
-            5.  [Pending] Implement the DVFS technique (determine healthy non-healthy cores by deviding current frequency with initial freqeuncy.
-            GPU tasks cpu-intensive since important with highest step, others not so with lowest step.). Verify/fix plots.
+            4.  [implemented] Run the vanilla system and plot the frequency degregation over time (aging), and impact to app metrics: TTFT, TBT
+            5.  [implemented] Implement the Zhaos23 technique. Verify/fix plots.
             6.  [Pending] Implement the proposed technique (Sleep/Wake sensitive to request rate. Dynamic core-set selection based
             on relative frequency(relative health)). Verify/fix plots.
 
@@ -329,9 +329,31 @@ class CPU(Processor):
     def get_a_core_to_assign(self):
 
         """Algorithm assigning a core to a task"""
-        #assigned_core = task_schedule_ubuntu(cpu_cores=self.cpu_cores, max_retries=self.core_count)
-        assigned_core = task_schedule_zhao23(cpu_cores=self.cpu_cores, max_retries=self.core_count)
-        #assigned_core = task_schedule_proposed(cpu_cores=self.cpu_cores, max_retries=self.core_count)
+        import configparser
+
+        def load_properties(file_path):
+            config = configparser.ConfigParser()
+            # ConfigParser requires section headers, so we add a fake one
+            absolute_directory = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(absolute_directory, file_path), 'r') as file:
+                properties_data = f"[DEFAULT]\n{file.read()}"
+            config.read_string(properties_data)
+            return config['DEFAULT']
+
+        global CPU_CONFIGS
+        if CPU_CONFIGS is None:
+            CPU_CONFIGS = load_properties('cpu_configs.properties')
+            print("cpu configs loaded", CPU_CONFIGS)
+
+        task_allocation_algo = CPU_CONFIGS.get("task_allocation_algo")
+        if task_allocation_algo == 'linux':
+            assigned_core = task_schedule_linux(cpu_cores=self.cpu_cores, max_retries=self.core_count)
+        elif task_allocation_algo == 'zhao23':
+            assigned_core = task_schedule_zhao23(cpu_cores=self.cpu_cores, max_retries=self.core_count)
+        elif task_allocation_algo == 'proposed':
+            assigned_core = task_schedule_proposed(cpu_cores=self.cpu_cores, max_retries=self.core_count)
+        else:
+            raise ValueError(f"Unknown task allocation algorithm: {task_allocation_algo}")
 
         transition_latency = assigned_core.c_state.transition_time_s
         assigned_core.c_state = CStates.C1.value  # set core to idle
@@ -368,6 +390,7 @@ class CPU(Processor):
         core_state['clock'] = clock()
         core_state['c_state_wake_latency'] = time_to_wake
         self.core_activity_log.append(core_state)
+
 
 
 @dataclass(kw_only=True)

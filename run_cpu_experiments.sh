@@ -11,7 +11,7 @@ types=("code" "conv")
 rates=("30" "40" "50" "60" "70" "80" "90" "100" "110" "120" "130" "140" "150")
 
 # debug
-#rates=("30" "40")
+#rates=("30")
 
 # Loop over each type
 for type in "${types[@]}"; do

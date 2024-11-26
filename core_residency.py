@@ -78,7 +78,7 @@ def core_id_sampler(df, bw_adjust=0.1):
         yield int(np.round(kde.resample(1)[0]))
 
 
-def task_schedule_ubuntu(cpu_cores, max_retries):
+def task_schedule_linux(cpu_cores, max_retries):
     """Implements core assignment behavior observed in the energy inference project [1].
 
     This function collects telemetry data from inference tasks [1] to observe CPU core residency. Based on the typical
