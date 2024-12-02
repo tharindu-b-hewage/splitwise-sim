@@ -2,9 +2,10 @@ import heapq
 import logging
 
 from collections import defaultdict
+from platform import processor
 
 import utils
-
+from core_power import CPU_CORE_ADJ_INTERVAL
 
 # global simulator that drives the simulation
 # bad practice, but it works for now
@@ -169,7 +170,12 @@ class TraceSimulator(Simulator):
         task_logs = self.cluster.task_logs()
         for index, log in enumerate(task_logs):
             machine_name, data = log
-            utils.save_dict_as_csv(data, f"cpu_usage/cpu_usage_{machine_name}_{index}.csv")
+            utils.save_dict_as_csv(data, f"cpu_usage/task_log_{machine_name}_{index}.csv")
+
+        slp_mgt_logs = self.cluster.sleep_mgt_logs()
+        for index, log in enumerate(slp_mgt_logs):
+            machine_name, data = log
+            utils.save_dict_as_csv(data, f"cpu_usage/slp_mgt_log_{machine_name}_{index}.csv")
 
 
 # Convenience functions for simulator object

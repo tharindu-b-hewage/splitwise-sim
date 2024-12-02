@@ -89,8 +89,8 @@ def task_schedule_linux(cpu_cores, max_retries):
     [1] https://github.com/grantwilkins/energy-inference.git
     """
     free_core_ids = [core.id for core in cpu_cores if core.task is None]
-    if len(free_core_ids) == 0:
-        raise ValueError("No free cores are available")
+    # if len(free_core_ids) == 0:
+    #     raise ValueError("No free cores are available")
 
     core_id = None
     retries = 0

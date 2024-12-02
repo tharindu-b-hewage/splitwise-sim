@@ -89,12 +89,21 @@ class Cluster:
             for server in self.servers[sku]:
                 cpu = [processor for processor in server.processors
                                   if processor.processor_type == ProcessorType.CPU][0]
-                cpu.trigger_state_update()
-                task_logs.append((cpu.name, {
+                task_logs.append((server.server_id, [{
                     "tasks_total": cpu.total_task_count_log,
                     "tasks_oversubscribed": cpu.oversubscribed_task_count_log,
-                }))
+                }]))
         return task_logs
+
+    def sleep_mgt_logs(self):
+        slp_mgt_logs = []
+        # self.servers is a dictionary of lists of servers. We need to iterate over the lists.
+        for sku in self.servers:
+            for server in self.servers[sku]:
+                cpu = [processor for processor in server.processors
+                                  if processor.processor_type == ProcessorType.CPU][0]
+                slp_mgt_logs.append((server.server_id, cpu.sleep_manager_logs))
+        return slp_mgt_logs
 
     def cpu_core_usage(self):
         """
@@ -107,7 +116,7 @@ class Cluster:
                 cpu = [processor for processor in server.processors
                                   if processor.processor_type == ProcessorType.CPU][0]
                 cpu.trigger_state_update()
-                servers.append((cpu.name, cpu.core_activity_log))
+                servers.append((server.server_id, cpu.core_activity_log))
         return servers
 
     def trigger_state_update(self):

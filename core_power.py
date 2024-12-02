@@ -7,6 +7,8 @@ from xml.dom.expatbuilder import FilterVisibilityController
 # we set to an hour, because all core transition times are practically less than that.
 APPROX_INFINITY_S = 60 * 60
 
+CPU_CORE_ADJ_INTERVAL = 1
+
 
 class CState:
     state: str
@@ -468,3 +470,6 @@ def generate_initial_frequencies(n_cores=128):
         # Output sampled f_MAX
         frequencies.append(float(f_max))
     return frequencies
+
+
+

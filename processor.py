@@ -1,10 +1,12 @@
 import math
 import os
+import threading
+import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
 
 from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S, \
-    generate_initial_frequencies, calc_delta_vth, calc_aged_freq, Temperatures
+    generate_initial_frequencies, calc_delta_vth, calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL
 from core_residency import task_schedule_linux
 from instance import Instance, CpuTaskType
 from simulator import clock
@@ -16,6 +18,7 @@ CORE_IS_FREE = ''
 ENABLE_DEBUG_LOGS = False
 
 CPU_CONFIGS = None
+
 
 # LOGICAL_CORE_COUNT = 256
 
@@ -257,30 +260,39 @@ class CPU(Processor):
     processor_type: ProcessorType = ProcessorType.CPU
     core_count: int
     # cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(core_count)])
-    cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(1)])
-    core_activity_log: []
-    oversubscribed_task_count_log: int = 0
-    total_task_count_log: int = 0
+    #cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(1)])
+    #core_activity_log: []
+    #oversubscribed_task_count_log: int = 0
+    #total_task_count_log: int = 0
+
 
     def __post_init__(self):
+
         # Now we can use core_count to initialize cpu_cores
         process_variation_induced_initial_core_fq = generate_initial_frequencies(n_cores=self.core_count)
 
         # initial temperature is 54 degrees celcius. Data modelled after experiments from Green Core testbed.
         self.cpu_cores = [Core(id=idx, f_init=init_fq, temp_init=Temperatures.C0_POLL) for idx, init_fq in
                           enumerate(process_variation_induced_initial_core_fq)]
+        self.core_activity_log = []
+        self.oversubscribed_task_count_log = 0
+        self.total_task_count_log = 0
 
         # manage core sleeping.
-        self.active_core_limit = 10 # Initial parameter. A good guess based on usual request arrival rate.
+        self.active_core_limit = len(self.cpu_cores) # Initial parameter. controller should adjust to optmize.
         self.put_to_sleep(to_sleep=len(self.cpu_cores) - self.active_core_limit, cores=self.cpu_cores) # initial core-set to sleep. Done taking the health into account.
         self.core_oversubscribe_tasks = {
             "core_oversubscribe_tasks": 0,
-            "last_core_adjust_time": clock(),
-            "core_adjust_dt": 300.0, # 5 minutes
+            "last_core_adjust_time": 0.0,
+            "core_adjust_dt": CPU_CORE_ADJ_INTERVAL,
             "err_integral": 0.0,
             "prev_error": 0.0,
         }
 
+        self.sleep_manager_logs = []
+        self.id = uuid.uuid4()
+
+    # todo: check if task to core balance it + or -. then trigger periodic event to adjust the core count.
     def assign_core_to_cpu_task(self, task, override_task_description=None):
         self.total_task_count_log += 1
 
@@ -319,16 +331,39 @@ class CPU(Processor):
 
         if task_core_id == -1:
             self.core_oversubscribe_tasks['core_oversubscribe_tasks'] = self.core_oversubscribe_tasks['core_oversubscribe_tasks'] - 1
+        self.adjust_sleeping_cores()
 
         # free the core
         core = list(filter(lambda c: c.id == task_core_id, self.cpu_cores))[0]
         self.free(core)
+
+    def free(self, core):
+        self.update_aging(core)
+        # debug
+        if ENABLE_DEBUG_LOGS:
+            print(f"Release core: {core.id} from task: {core.task} at time: {clock()}")
+        core.task = None
+        core.c_state = CStates.C1.value  # set core to idle
+        # update core idle state
+        next_c_state = get_c_state_from_idle_governor(last_8_idle_durations_s=core.last_idle_durations,
+                                                      latency_limit_core_wake_s=APPROX_INFINITY_S)
+        core.c_state = next_c_state
+        core.temp = next_c_state.temp  # model temperature for idle core
+        core.last_idle_set_time = clock()
+        self.log_cpu_state(core=core, time_to_wake=None)
+
+    def adjust_sleeping_cores(self):
 
         # stabilize to core over-subscription
         dt = self.core_oversubscribe_tasks['core_adjust_dt']
         t_delta = clock() - self.core_oversubscribe_tasks['last_core_adjust_time']
         if t_delta < dt:
             return
+
+        # add a debug log to print the id, last_core_adjust_time, and clock
+        print('id', self.id, 'last_core_adjust_time', self.core_oversubscribe_tasks['last_core_adjust_time'], 't_delta', t_delta, 'clock', clock())
+
+        self.core_oversubscribe_tasks['last_core_adjust_time'] = clock()
 
         """
         We use an async approach to manage the number of awaken cores. When available number of cores are not 
@@ -347,7 +382,7 @@ class CPU(Processor):
         active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
 
         total_tasks = oversub_tasks + normal_tasks
-        workload_ratio = oversub_tasks / total_tasks
+        workload_ratio = total_tasks / active_cores
 
         # we want workload ratio to be 1.0. If more cores are active than tasks, the ratio is less than zero. If less
         # cores are active than tasks, the ratio is more than 1.0. magnitude of the latter case is higher than former.
@@ -356,8 +391,8 @@ class CPU(Processor):
 
         prop_term = k_p * error
         self.core_oversubscribe_tasks['err_integral'] += error * dt
-        int_term = k_i *  self.core_oversubscribe_tasks['err_integral']
-        der_term = k_d * ((error - self.core_oversubscribe_tasks['prev_error'])/dt)
+        int_term = k_i * self.core_oversubscribe_tasks['err_integral']
+        der_term = k_d * ((error - self.core_oversubscribe_tasks['prev_error']) / dt)
         self.core_oversubscribe_tasks['prev_error'] = error
 
         adjust = scaling_factor * (prop_term + int_term + der_term)
@@ -367,25 +402,18 @@ class CPU(Processor):
         elif adjust < 0:
             self.put_to_sleep(to_sleep=-int(adjust), cores=self.cpu_cores)
 
-        self.core_oversubscribe_tasks['last_core_adjust_time'] = clock()
 
-
-
-
-    def free(self, core):
-        self.update_aging(core)
-        # debug
-        if ENABLE_DEBUG_LOGS:
-            print(f"Release core: {core.id} from task: {core.task} at time: {clock()}")
-        core.task = None
-        core.c_state = CStates.C1.value  # set core to idle
-        # update core idle state
-        next_c_state = get_c_state_from_idle_governor(last_8_idle_durations_s=core.last_idle_durations,
-                                                      latency_limit_core_wake_s=APPROX_INFINITY_S)
-        core.c_state = next_c_state
-        core.temp = next_c_state.temp  # model temperature for idle core
-        core.last_idle_set_time = clock()
-        self.log_cpu_state(core=core, time_to_wake=None)
+        self.sleep_manager_logs.append({
+            'id': self.id,
+            'clock': clock(),
+            'oversub_tasks': oversub_tasks,
+            'normal_tasks': normal_tasks,
+            'active_cores': active_cores,
+            'asleep_cores': len(self.cpu_cores) - active_cores,
+            'workload_ratio': workload_ratio,
+            'error': error,
+            'adjust': adjust,
+        })
 
     def update_aging(self, assigned_core):
         clk = clock()
@@ -413,7 +441,7 @@ class CPU(Processor):
         global CPU_CONFIGS
         if CPU_CONFIGS is None:
             CPU_CONFIGS = load_properties('cpu_configs.properties')
-            print("cpu configs loaded", CPU_CONFIGS)
+            #print("cpu configs loaded", CPU_CONFIGS)
 
         # omit allocating sleeping cores.
         awaken_cores = list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores))
