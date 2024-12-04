@@ -5,6 +5,8 @@ import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+import numpy as np
+
 from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S, \
     generate_initial_frequencies, calc_delta_vth, calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL
 from core_residency import task_schedule_linux
@@ -282,6 +284,7 @@ class CPU(Processor):
         self.active_core_limit = len(self.cpu_cores) # Initial parameter. controller should adjust to optmize.
         self.put_to_sleep(to_sleep=len(self.cpu_cores) - self.active_core_limit, cores=self.cpu_cores) # initial core-set to sleep. Done taking the health into account.
         self.core_oversubscribe_tasks = {
+            "past_e_t": [],
             "core_oversubscribe_tasks": 0,
             "last_core_adjust_time": 0.0,
             "core_adjust_dt": CPU_CORE_ADJ_INTERVAL,
@@ -331,7 +334,7 @@ class CPU(Processor):
 
         if task_core_id == -1:
             self.core_oversubscribe_tasks['core_oversubscribe_tasks'] = self.core_oversubscribe_tasks['core_oversubscribe_tasks'] - 1
-        self.adjust_sleeping_cores()
+            return
 
         # free the core
         core = list(filter(lambda c: c.id == task_core_id, self.cpu_cores))[0]
@@ -354,65 +357,92 @@ class CPU(Processor):
 
     def adjust_sleeping_cores(self):
 
-        # stabilize to core over-subscription
-        dt = self.core_oversubscribe_tasks['core_adjust_dt']
-        t_delta = clock() - self.core_oversubscribe_tasks['last_core_adjust_time']
-        if t_delta < dt:
-            return
-
-        # add a debug log to print the id, last_core_adjust_time, and clock
-        print('id', self.id, 'last_core_adjust_time', self.core_oversubscribe_tasks['last_core_adjust_time'], 't_delta', t_delta, 'clock', clock())
-
-        self.core_oversubscribe_tasks['last_core_adjust_time'] = clock()
-
-        """
-        We use an async approach to manage the number of awaken cores. When available number of cores are not 
-        enough, some of the sleeping cores need to be awaken. What we do is, let the task to oversubscribe, so that any
-        delays incurring from deep-sleep wake is avoided, compromising the potential cpu time steal latency from the 
-        oversubscription. We count the number of such tasks. Then we apply a PID controller to adjust the number of 
-        cpu cores that are awaken.
-        """
-        k_p = 0.2
-        k_i = 0.1
-        k_d = 0.1
-        scaling_factor = 1.0
-
         oversub_tasks = self.core_oversubscribe_tasks["core_oversubscribe_tasks"]
         normal_tasks = len(list(filter(lambda c: c.task is not None and not c.forced_to_sleep, self.cpu_cores)))
+        T_t = normal_tasks + oversub_tasks
+
         active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
+        N = len(self.cpu_cores)
+        C_SLP_t = N - active_cores
 
-        total_tasks = oversub_tasks + normal_tasks
-        workload_ratio = total_tasks / active_cores
+        e_t = N - C_SLP_t - T_t
+        e_t = min(N, e_t)
+        past_e_t = self.core_oversubscribe_tasks["past_e_t"]
+        if len(past_e_t) == 8:
+            past_e_t.pop(0)
+        past_e_t.append(e_t)
 
-        # we want workload ratio to be 1.0. If more cores are active than tasks, the ratio is less than zero. If less
-        # cores are active than tasks, the ratio is more than 1.0. magnitude of the latter case is higher than former.
-        # this is what we need.
-        error = 1.0 - workload_ratio
+        k = 90
+        e_t_pkth = np.percentile(past_e_t, k)
+        e_t_pkth_nrml = e_t_pkth / N
 
-        prop_term = k_p * error
-        self.core_oversubscribe_tasks['err_integral'] += error * dt
-        int_term = k_i * self.core_oversubscribe_tasks['err_integral']
-        der_term = k_d * ((error - self.core_oversubscribe_tasks['prev_error']) / dt)
-        self.core_oversubscribe_tasks['prev_error'] = error
+        F_e_t_pkth_nrml = e_t_pkth_nrml
+        if e_t_pkth_nrml >= 0:
+            F_e_t_pkth_nrml = math.tan(0.785 * e_t_pkth_nrml)
+        else:
+            F_e_t_pkth_nrml = math.atan(1.55 * e_t_pkth_nrml)
 
-        adjust = scaling_factor * (prop_term + int_term + der_term)
+        corrected_e_t = N * F_e_t_pkth_nrml
 
-        if adjust > 0:
-            self.put_to_wake(to_wake=int(adjust), cores=self.cpu_cores)
-        elif adjust < 0:
-            self.put_to_sleep(to_sleep=-int(adjust), cores=self.cpu_cores)
+        if corrected_e_t > 0:
+            self.put_to_sleep(to_sleep=int(corrected_e_t), cores=self.cpu_cores)
+        elif corrected_e_t < 0:
+            self.put_to_wake(to_wake=-int(corrected_e_t), cores=self.cpu_cores)
 
+        # # stabilize to core over-subscription
+        # dt = self.core_oversubscribe_tasks['core_adjust_dt']
+        # t_delta = clock() - self.core_oversubscribe_tasks['last_core_adjust_time']
+        # if t_delta < dt:
+        #     return
+        #
+        #
+        # self.core_oversubscribe_tasks['last_core_adjust_time'] = clock()
+        #
+        # """
+        # We use an async approach to manage the number of awaken cores. When available number of cores are not
+        # enough, some of the sleeping cores need to be awaken. What we do is, let the task to oversubscribe, so that any
+        # delays incurring from deep-sleep wake is avoided, compromising the potential cpu time steal latency from the
+        # oversubscription. We count the number of such tasks. Then we apply a PID controller to adjust the number of
+        # cpu cores that are awaken.
+        # """
+        # k_p = 0.2
+        # k_i = 0.1
+        # k_d = 0.1
+        # scaling_factor = 1.0
+        #
+        # oversub_tasks = self.core_oversubscribe_tasks["core_oversubscribe_tasks"]
+        # normal_tasks = len(list(filter(lambda c: c.task is not None and not c.forced_to_sleep, self.cpu_cores)))
+        # active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
+        #
+        # total_tasks = oversub_tasks + normal_tasks
+        # workload_ratio = total_tasks / active_cores
+        #
+        # # we want workload ratio to be 1.0. If more cores are active than tasks, the ratio is less than zero. If less
+        # # cores are active than tasks, the ratio is more than 1.0. magnitude of the latter case is higher than former.
+        # # this is what we need.
+        # error = 1.0 - workload_ratio
+        #
+        # prop_term = k_p * error
+        # self.core_oversubscribe_tasks['err_integral'] += error * dt
+        # int_term = k_i * self.core_oversubscribe_tasks['err_integral']
+        # der_term = k_d * ((error - self.core_oversubscribe_tasks['prev_error']) / dt)
+        # self.core_oversubscribe_tasks['prev_error'] = error
+        #
+        # adjust = scaling_factor * (prop_term + int_term + der_term)
+        #
+        # if adjust > 0:
+        #     self.put_to_wake(to_wake=int(adjust), cores=self.cpu_cores)
+        # elif adjust < 0:
+        #     self.put_to_sleep(to_sleep=-int(adjust), cores=self.cpu_cores)
 
         self.sleep_manager_logs.append({
             'id': self.id,
             'clock': clock(),
             'oversub_tasks': oversub_tasks,
             'normal_tasks': normal_tasks,
+            'T_t': T_t,
             'active_cores': active_cores,
             'asleep_cores': len(self.cpu_cores) - active_cores,
-            'workload_ratio': workload_ratio,
-            'error': error,
-            'adjust': adjust,
         })
 
     def update_aging(self, assigned_core):

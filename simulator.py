@@ -1,8 +1,12 @@
+import configparser
 import heapq
 import logging
+import os
 
 from collections import defaultdict
 from platform import processor
+
+import numpy as np
 
 import utils
 from core_power import CPU_CORE_ADJ_INTERVAL
@@ -101,6 +105,7 @@ class TraceSimulator(Simulator):
         self.router = router
         self.arbiter = arbiter
         logging.info("TraceSimulator initialized")
+        self.last_request_arrival = 0.0
         self.load_trace()
 
     def load_trace(self):
@@ -108,8 +113,10 @@ class TraceSimulator(Simulator):
         Load requests from the trace as arrival events.
         """
         for request in self.trace.requests:
+            arrival_timestamp = request.arrival_timestamp
             self.schedule(request.arrival_timestamp,
                           lambda request=request: self.router.request_arrival(request))
+            self.last_request_arrival = arrival_timestamp
 
     def run(self):
         # start simulation by scheduling a cluster run
@@ -119,6 +126,25 @@ class TraceSimulator(Simulator):
 
         # add a status entry at the beginning in the cpu usage log files. this is needed to process the collected data.
         self.cluster.trigger_state_update()
+
+        # schedule periodic monitoring in servers
+        def load_properties(file_path):
+            config = configparser.ConfigParser()
+            # ConfigParser requires section headers, so we add a fake one
+            absolute_directory = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(absolute_directory, file_path), 'r') as file:
+                properties_data = f"[DEFAULT]\n{file.read()}"
+            config.read_string(properties_data)
+            return config['DEFAULT']
+
+        CPU_CONFIGS = load_properties('cpu_configs.properties')
+        if CPU_CONFIGS.get("task_allocation_algo") == "proposed":
+            periodic_interval = 1.0
+            for interval_start in np.arange(0.0, self.last_request_arrival, periodic_interval):
+                for sku in self.cluster.servers:
+                    for server in self.cluster.servers[sku]:
+                        cpu = list(filter(lambda p: p.processor_type.value == 1, server.processors))[0]
+                        self.schedule(interval_start, lambda cpu=cpu: cpu.adjust_sleeping_cores())
 
         # run simulation
         super().run()
