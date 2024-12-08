@@ -750,10 +750,12 @@ class SplitwiseInstance(ORCAInstance):
         task.instance = self
         task.arrive()
 
+        # subtasks: 1
         # add task to request pool and pending queue
         self.add_to_pool(task)
         self.add_pending_task(task)
 
+        # subtasks: 2
         # if no tasks currently executing, start a new iteration
         if len(self.batch) == 0:
             # if instance is blocked due to memory constraints, do nothing

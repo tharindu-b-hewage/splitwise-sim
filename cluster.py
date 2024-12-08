@@ -92,6 +92,8 @@ class Cluster:
                 task_logs.append((server.server_id, [{
                     "tasks_total": cpu.total_task_count_log,
                     "tasks_oversubscribed": cpu.oversubscribed_task_count_log,
+                    "T_ts": cpu.temp_T_ts,
+                    "tasks_count": cpu.temp_running_tasks
                 }]))
         return task_logs
 

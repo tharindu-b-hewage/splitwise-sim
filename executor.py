@@ -3,7 +3,7 @@ import logging
 from enum import IntEnum
 
 from flow import Flow
-from instance import CpuTaskType
+from instance import CpuTaskType, LINUX_RR_PROCESS_TIMESLICE
 from node import NodeState
 from simulator import clock, schedule_event, cancel_event, reschedule_event
 from task import Task
@@ -81,7 +81,8 @@ class Executor():
         self.submitted.append(task)
 
         core_id_for_task_arrival, core_overhead, scaling_factor = instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.HANDLE_TASK_ARRIVAL)
-        task_runtime = CpuTaskType.HANDLE_TASK_ARRIVAL.value["overhead_time"]
+        #task_runtime = CpuTaskType.HANDLE_TASK_ARRIVAL.value["overhead_time"]
+        task_runtime = LINUX_RR_PROCESS_TIMESLICE * 2 # instance.task_arrival in the splitwise instance class conduct two subtasks. We estimate task subtask take a time slice amount
         task_runtime = task_runtime * scaling_factor
         schedule_event(self.overheads.submit_task + task_runtime + core_overhead,
                        lambda instance=instance,task=task: \

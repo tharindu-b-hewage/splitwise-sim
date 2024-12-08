@@ -2,4 +2,5 @@ _target_: processor.CPU
 name: dual-amd-rome-7742
 # value setting is hardcoded. Need to fix properly.
 memory_size: 0
-core_count: 128
+#core_count: 128 # original
+core_count: 128 # scaled

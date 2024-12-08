@@ -280,6 +280,10 @@ class CPU(Processor):
         self.oversubscribed_task_count_log = 0
         self.total_task_count_log = 0
 
+        self.temp_T_ts = []
+        self.temp_running_tasks = []
+        self.temp_running_tasks_counter = 0
+
         # manage core sleeping.
         self.active_core_limit = len(self.cpu_cores) # Initial parameter. controller should adjust to optmize.
         self.put_to_sleep(to_sleep=len(self.cpu_cores) - self.active_core_limit, cores=self.cpu_cores) # initial core-set to sleep. Done taking the health into account.
@@ -297,6 +301,19 @@ class CPU(Processor):
 
     # todo: check if task to core balance it + or -. then trigger periodic event to adjust the core count.
     def assign_core_to_cpu_task(self, task, override_task_description=None):
+        self.temp_running_tasks_counter += 1
+
+        mem_used = 0.0
+        mem_total = 0.0
+        for p in self.server.processors:
+            if p == self:
+                continue
+            mem_used += p.memory_used
+            mem_total += p.memory_size
+        mem_util = mem_used / mem_total
+
+        self.temp_running_tasks.append([clock(), self.temp_running_tasks_counter, mem_util])
+
         self.total_task_count_log += 1
 
         assigned_core, time_to_wake = self.get_a_core_to_assign()
@@ -331,6 +348,7 @@ class CPU(Processor):
         return assigned_core.id, time_to_wake, age_induced_freq_scaling_factor
 
     def release_core_from_cpu_task(self, task_core_id):
+        self.temp_running_tasks_counter -= 1
 
         if task_core_id == -1:
             self.core_oversubscribe_tasks['core_oversubscribe_tasks'] = self.core_oversubscribe_tasks['core_oversubscribe_tasks'] - 1
@@ -360,6 +378,7 @@ class CPU(Processor):
         oversub_tasks = self.core_oversubscribe_tasks["core_oversubscribe_tasks"]
         normal_tasks = len(list(filter(lambda c: c.task is not None and not c.forced_to_sleep, self.cpu_cores)))
         T_t = normal_tasks + oversub_tasks
+        self.temp_T_ts.append(T_t)
 
         active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
         N = len(self.cpu_cores)
@@ -436,7 +455,6 @@ class CPU(Processor):
         #     self.put_to_sleep(to_sleep=-int(adjust), cores=self.cpu_cores)
 
         self.sleep_manager_logs.append({
-            'id': self.id,
             'clock': clock(),
             'oversub_tasks': oversub_tasks,
             'normal_tasks': normal_tasks,

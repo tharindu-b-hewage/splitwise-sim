@@ -4,14 +4,16 @@
 ./clean.sh
 
 # Define the types
-types=("code" "conv")
+#types=("code" "conv")
+types=("conv")
 
 # all
 #rates=("30" "40" "50" "60" "70" "80" "90" "100" "110" "120" "130" "140" "150" "160" "170" "180" "190" "200" "210" "220" "230" "240" "250")
 #rates=("30" "40" "50" "60" "70" "80" "90" "100" "110" "120" "130" "140" "150")
+rates=("90" "110" "130" "150" "170" "190")
 
 # debug
-rates=("30")
+#rates=("150")
 
 # Loop over each type
 for type in "${types[@]}"; do
