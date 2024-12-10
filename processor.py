@@ -1,6 +1,5 @@
 import math
 import os
-import threading
 import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -213,8 +212,15 @@ def task_schedule_zhao23(cpu_cores, max_retries):
 
 def task_schedule_proposed(cpu_cores, max_retries):
     selected_core = None
+    selected_idle_score = 0.0
+    for core in cpu_cores:
+        if core.task is not None: # avoid already busy cores.
+            continue
 
-    # todo: implement the logic for our algorithm.
+        idle_score = sum(core.last_idle_durations) # tap into the idle subsystem to even-out core usage
+        if selected_core is None or idle_score > selected_idle_score:
+            selected_core = core
+            selected_idle_score = idle_score
 
     # if none, pick the first free core.
     if selected_core is None:
@@ -285,8 +291,8 @@ class CPU(Processor):
         self.temp_running_tasks_counter = 0
 
         # manage core sleeping.
-        self.active_core_limit = len(self.cpu_cores) # Initial parameter. controller should adjust to optmize.
-        self.put_to_sleep(to_sleep=len(self.cpu_cores) - self.active_core_limit, cores=self.cpu_cores) # initial core-set to sleep. Done taking the health into account.
+        #self.active_core_limit = len(self.cpu_cores) # Initial parameter. controller should adjust to optmize.
+        #self.put_to_sleep(to_sleep=len(self.cpu_cores) - self.active_core_limit, cores=self.cpu_cores) # initial core-set to sleep. Done taking the health into account.
         self.core_oversubscribe_tasks = {
             "past_e_t": [],
             "core_oversubscribe_tasks": 0,
@@ -301,8 +307,12 @@ class CPU(Processor):
 
     # todo: check if task to core balance it + or -. then trigger periodic event to adjust the core count.
     def assign_core_to_cpu_task(self, task, override_task_description=None):
+        # monitoring
+
+        # total running tasks
         self.temp_running_tasks_counter += 1
 
+        # gpu memory usage
         mem_used = 0.0
         mem_total = 0.0
         for p in self.server.processors:
@@ -312,10 +322,15 @@ class CPU(Processor):
             mem_total += p.memory_size
         mem_util = mem_used / mem_total
 
-        self.temp_running_tasks.append([clock(), self.temp_running_tasks_counter, mem_util])
+        # core sleep management
+        awaken_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
+
+        # log entry
+        self.temp_running_tasks.append([clock(), self.temp_running_tasks_counter, mem_util, awaken_cores])
 
         self.total_task_count_log += 1
 
+        # assign logic
         assigned_core, time_to_wake = self.get_a_core_to_assign()
         if assigned_core is None:
             self.oversubscribed_task_count_log += 1
@@ -375,84 +390,51 @@ class CPU(Processor):
 
     def adjust_sleeping_cores(self):
 
+        # cores
+        N = len(self.cpu_cores)
+
+        active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
+        C_SLP_t = N - active_cores
+
+        # tasks
         oversub_tasks = self.core_oversubscribe_tasks["core_oversubscribe_tasks"]
         normal_tasks = len(list(filter(lambda c: c.task is not None and not c.forced_to_sleep, self.cpu_cores)))
         T_t = normal_tasks + oversub_tasks
         self.temp_T_ts.append(T_t)
 
-        active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
-        N = len(self.cpu_cores)
-        C_SLP_t = N - active_cores
+        # assumed in llm inference servers number of available cores are excessive.
+        # this is an algorithmic estimation, not
+        # a part of the system model.
+        # algorithm performs online optimization based on this assumption.
+        T_t = min(N, T_t)
 
+        # error signal
         e_t = N - C_SLP_t - T_t
-        e_t = min(N, e_t)
-        past_e_t = self.core_oversubscribe_tasks["past_e_t"]
-        if len(past_e_t) == 8:
-            past_e_t.pop(0)
-        past_e_t.append(e_t)
 
-        k = 90
-        e_t_pkth = np.percentile(past_e_t, k)
-        e_t_pkth_nrml = e_t_pkth / N
+        e_t_prd = e_t
 
-        F_e_t_pkth_nrml = e_t_pkth_nrml
-        if e_t_pkth_nrml >= 0:
-            F_e_t_pkth_nrml = math.tan(0.785 * e_t_pkth_nrml)
+        # normalize
+        e_t_prd = e_t_prd / N
+
+        # apply reaction function
+        F_e_t_prd = e_t_prd
+        if e_t_prd >= 0:
+            F_e_t_prd = math.tan(0.785 * e_t_prd)
         else:
-            F_e_t_pkth_nrml = math.atan(1.55 * e_t_pkth_nrml)
+            F_e_t_prd = math.atan(1.55 * e_t_prd)
 
-        corrected_e_t = N * F_e_t_pkth_nrml
+        # scale up
+        e_t_corr = N * F_e_t_prd
 
-        if corrected_e_t > 0:
-            self.put_to_sleep(to_sleep=int(corrected_e_t), cores=self.cpu_cores)
-        elif corrected_e_t < 0:
-            self.put_to_wake(to_wake=-int(corrected_e_t), cores=self.cpu_cores)
+        # final error signal
+        e_t_corr = int(e_t_corr)
 
-        # # stabilize to core over-subscription
-        # dt = self.core_oversubscribe_tasks['core_adjust_dt']
-        # t_delta = clock() - self.core_oversubscribe_tasks['last_core_adjust_time']
-        # if t_delta < dt:
-        #     return
-        #
-        #
-        # self.core_oversubscribe_tasks['last_core_adjust_time'] = clock()
-        #
-        # """
-        # We use an async approach to manage the number of awaken cores. When available number of cores are not
-        # enough, some of the sleeping cores need to be awaken. What we do is, let the task to oversubscribe, so that any
-        # delays incurring from deep-sleep wake is avoided, compromising the potential cpu time steal latency from the
-        # oversubscription. We count the number of such tasks. Then we apply a PID controller to adjust the number of
-        # cpu cores that are awaken.
-        # """
-        # k_p = 0.2
-        # k_i = 0.1
-        # k_d = 0.1
-        # scaling_factor = 1.0
-        #
-        # oversub_tasks = self.core_oversubscribe_tasks["core_oversubscribe_tasks"]
-        # normal_tasks = len(list(filter(lambda c: c.task is not None and not c.forced_to_sleep, self.cpu_cores)))
-        # active_cores = len(list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores)))
-        #
-        # total_tasks = oversub_tasks + normal_tasks
-        # workload_ratio = total_tasks / active_cores
-        #
-        # # we want workload ratio to be 1.0. If more cores are active than tasks, the ratio is less than zero. If less
-        # # cores are active than tasks, the ratio is more than 1.0. magnitude of the latter case is higher than former.
-        # # this is what we need.
-        # error = 1.0 - workload_ratio
-        #
-        # prop_term = k_p * error
-        # self.core_oversubscribe_tasks['err_integral'] += error * dt
-        # int_term = k_i * self.core_oversubscribe_tasks['err_integral']
-        # der_term = k_d * ((error - self.core_oversubscribe_tasks['prev_error']) / dt)
-        # self.core_oversubscribe_tasks['prev_error'] = error
-        #
-        # adjust = scaling_factor * (prop_term + int_term + der_term)
-        #
-        # if adjust > 0:
-        #     self.put_to_wake(to_wake=int(adjust), cores=self.cpu_cores)
-        # elif adjust < 0:
-        #     self.put_to_sleep(to_sleep=-int(adjust), cores=self.cpu_cores)
+        # put cores to sleep
+        delta_cores = abs(e_t_corr)
+        if e_t_corr > 0:
+            self.put_to_sleep(to_sleep=delta_cores, cores=self.cpu_cores)
+        elif e_t_corr < 0:
+            self.put_to_wake(to_wake=delta_cores, cores=self.cpu_cores)
 
         self.sleep_manager_logs.append({
             'clock': clock(),
@@ -551,8 +533,14 @@ class CPU(Processor):
 
         # health is calculated as the current degraded frequency over the nominal frequency.
         free_awake_cores = sorted(free_awake_cores, key=lambda c: c.freq / c.freq_0) # health low to high.
-        for core in free_awake_cores[:min(to_sleep, len(free_awake_cores))]:
+        sleep_count = 0
+        for idx in range(len(free_awake_cores)):
+            core = free_awake_cores[idx]
             self.force_sleep(core)
+            self.log_cpu_state(core=core, time_to_wake=None)
+            sleep_count += 1
+            if sleep_count >= to_sleep:
+                break
 
     def put_to_wake(self, to_wake, cores):
         """
@@ -562,9 +550,14 @@ class CPU(Processor):
 
         # health is calculated as the current degraded frequency over the nominal frequency.
         asleep_cores = sorted(asleep_cores, key=lambda c: c.freq / c.freq_0, reverse=True) # health low to high.
-        for core in asleep_cores[:min(to_wake, len(asleep_cores))]:
+        wake_count = 0
+        for idx in range(len(asleep_cores)):
+            core = asleep_cores[idx]
             self.force_wake(core)
-
+            self.log_cpu_state(core=core, time_to_wake=None)
+            wake_count += 1
+            if wake_count >= to_wake:
+                break
 
     def force_sleep(self, core):
         core.forced_to_sleep = True

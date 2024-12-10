@@ -67,6 +67,7 @@ class Flow(Node):
         # manage memory
         self.dest.alloc_memory(self.request, self.request.memory)
 
+
     def complete(self):
         super().complete()
 

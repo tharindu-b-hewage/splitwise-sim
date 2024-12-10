@@ -103,12 +103,14 @@ class Link():
         self.executing_queue.remove(flow)
         self.completed_queue.append(flow)
         flow.executor.finish_flow(flow, self)
-
-        core_for_flow_completion_notify, core_overhead, scaling_factor = flow.src.cpu.assign_core_to_cpu_task(task=CpuTaskType.FLOW_COMPLETION)
-        # notify_flow_completion in the ORCAinstance does a one task. We estimate the time taken for it with a single timeslice.
-        task_runtime = LINUX_RR_PROCESS_TIMESLICE * scaling_factor
         if flow.notify:
-            schedule_event(task_runtime + core_overhead, lambda flow=flow: flow.src.notify_flow_completion(flow=flow, core_for_flow_completion_notify=core_for_flow_completion_notify))
+            flow.src.notify_flow_completion(flow)
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        instance = flow.src
+        c_id, overhead, age_scaling =instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.FLOW_COMPLETION)
+        runtime = LINUX_RR_PROCESS_TIMESLICE * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: instance.cpu.release_core_from_cpu_task(task_core_id=c_id))
 
         self.bandwidth_used -= (self.bandwidth - self.bandwidth_used)
         if len(self.pending_queue) > 0 and len(self.executing_queue) < self.max_flows:

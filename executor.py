@@ -35,6 +35,7 @@ class Executor():
         self.submitted = []
         # to cancel any events
         self.completion_events = {}
+        self.cpu = None
 
     def successors(self, node):
         """
@@ -56,6 +57,13 @@ class Executor():
         """
         Submits the specified node for execution.
         """
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        cpu = self.cpu
+        c_id, overhead, age_scaling =cpu.assign_core_to_cpu_task(task=CpuTaskType.EXECUTOR_TASK)
+        runtime = CpuTaskType.EXECUTOR_TASK.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         if isinstance(node, Task):
             self.submit_task(node)
         elif isinstance(node, Flow):
@@ -67,6 +75,13 @@ class Executor():
         """
         Submits the specified chain of Nodes for execution.
         """
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        cpu = self.cpu
+        c_id, overhead, age_scaling = cpu.assign_core_to_cpu_task(task=CpuTaskType.EXECUTOR_TASK)
+        runtime = CpuTaskType.EXECUTOR_TASK.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         for node in chain:
             self.submit(node)
 
@@ -79,14 +94,16 @@ class Executor():
             instance = task.instance
         task.executor = self
         self.submitted.append(task)
+        schedule_event(self.overheads.submit_task,
+                       lambda instance=instance, task=task: \
+                           instance.task_arrival(task))
 
-        core_id_for_task_arrival, core_overhead, scaling_factor = instance.cpu.assign_core_to_cpu_task(task=CpuTaskType.HANDLE_TASK_ARRIVAL)
-        #task_runtime = CpuTaskType.HANDLE_TASK_ARRIVAL.value["overhead_time"]
-        task_runtime = LINUX_RR_PROCESS_TIMESLICE * 2 # instance.task_arrival in the splitwise instance class conduct two subtasks. We estimate task subtask take a time slice amount
-        task_runtime = task_runtime * scaling_factor
-        schedule_event(self.overheads.submit_task + task_runtime + core_overhead,
-                       lambda instance=instance,task=task: \
-                           instance.task_arrival(task, core_id_for_task_arrival_function=core_id_for_task_arrival))
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        cpu = self.cpu
+        c_id, overhead, age_scaling =cpu.assign_core_to_cpu_task(task=CpuTaskType.HANDLE_TASK_ARRIVAL)
+        runtime = (LINUX_RR_PROCESS_TIMESLICE * 2) * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         # if this is the first task in the chain, submit the chain
         self.submit_chain(task.chain)
 
@@ -94,6 +111,13 @@ class Executor():
         """
         Finishes the specified task.
         """
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        cpu = self.cpu
+        c_id, overhead, age_scaling = cpu.assign_core_to_cpu_task(task=CpuTaskType.EXECUTOR_TASK)
+        runtime = CpuTaskType.EXECUTOR_TASK.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         self.submitted.remove(task)
         successor_nodes = list(self.successors(task))
         # NOTE: assumes a single leaf node
@@ -111,6 +135,13 @@ class Executor():
         Submits the specified flow for execution.
         If link is not specified, uses the flow's link.
         """
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        cpu = self.cpu
+        c_id, overhead, age_scaling = cpu.assign_core_to_cpu_task(task=CpuTaskType.EXECUTOR_TASK)
+        runtime = CpuTaskType.EXECUTOR_TASK.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         if link is None:
             link = flow.link
         flow.executor = self
@@ -124,6 +155,13 @@ class Executor():
         """
         Finishes the specified flow.
         """
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        cpu = self.cpu
+        c_id, overhead, age_scaling = cpu.assign_core_to_cpu_task(task=CpuTaskType.EXECUTOR_TASK)
+        runtime = CpuTaskType.EXECUTOR_TASK.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         self.submitted.remove(flow)
         successor_nodes = list(self.successors(flow))
         # NOTE: assumes a single leaf node
@@ -140,6 +178,13 @@ class Executor():
         """
         Finishes executing the entire Request.
         """
+
+        # model cpu occupancy. note we do not model blocking time of mem. allocation for the inference flow.
+        cpu = self.cpu
+        c_id, overhead, age_scaling = cpu.assign_core_to_cpu_task(task=CpuTaskType.EXECUTOR_TASK)
+        runtime = CpuTaskType.EXECUTOR_TASK.value["overhead_time"] * age_scaling
+        schedule_event(runtime + overhead, lambda c_id=c_id: cpu.release_core_from_cpu_task(task_core_id=c_id))
+
         def fin_req():
             self.scheduler.request_completion(self.request)
         schedule_event(self.overheads.finish_request, fin_req)

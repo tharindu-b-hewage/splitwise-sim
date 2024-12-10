@@ -13,7 +13,7 @@ from executor import Executor, ExecutorType
 from interconnect import DummyLink
 from performance_model import get_duration
 from simulator import clock, schedule_event, cancel_event, reschedule_event
-from task import Task, TaskType
+from task import Task, TaskType, TokenTask
 from flow import FlowType
 
 
@@ -115,11 +115,20 @@ class Scheduler(ABC):
         Spawn an Executor for the request.
         Executors can logically execute anywhere.
         We don't model where they run in simulation.
+        --> @Tharindu: LLM-CA: We run executor on the token instance (less compute-intensive vs prompt instance)
         """
         executor = Executor.create(executor_type,
                                    request,
                                    self,
                                    self.executor_overheads)
+        for node in request.nodes.values():
+            if executor.cpu is None:
+                if isinstance(node, Task):
+                    executor.cpu = node.instance.cpu
+            elif isinstance(node, Task) and isinstance(node, TokenTask):
+                """Run executor on the token instance because it is less compute-intensive"""
+                executor.cpu = node.instance.cpu
+
         self.executors[request.request_id] = executor
         executor.run()
 

@@ -294,17 +294,18 @@ def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_c
 
     [1] https://www.kernel.org/doc/html/v5.4/admin-guide/pm/cpuidle.html
     """
-    if last_8_idle_durations_s is None:
-        last_8_idle_durations_s = []
+    idle_queue = last_8_idle_durations_s.copy()
+    if idle_queue is None:
+        idle_queue = []
     predicted_idle_duration = APPROX_INFINITY_S
-    while len(last_8_idle_durations_s) > 0:
-        average = sum(last_8_idle_durations_s) / len(last_8_idle_durations_s)
-        variance = sum((x - average) ** 2 for x in last_8_idle_durations_s) / len(last_8_idle_durations_s)
+    while len(idle_queue) > 0:
+        average = sum(idle_queue) / len(idle_queue)
+        variance = sum((x - average) ** 2 for x in idle_queue) / len(idle_queue)
         standard_deviation = variance ** 0.5
         if variance < 0.0004 or average > 6 * standard_deviation:
             predicted_idle_duration = average
             break
-        last_8_idle_durations_s.remove(max(last_8_idle_durations_s))
+        idle_queue.remove(max(idle_queue))
 
     latency_limit = predicted_idle_duration
     number_of_tasks_waiting_on_io = 0  # we assume LLM inference tasks are CPU bound
@@ -316,16 +317,19 @@ def get_c_state_from_idle_governor(last_8_idle_durations_s=None, latency_limit_c
     c_states = [state.value for state in CStates if
                 state.value.state != "C0"]  # C0 indicate active and executing instructions, which is not idle
     chosen_c_state = list(filter(lambda x: x.state == "C1", c_states))[0]  # default to C1 = idle but online
-    for c_state in c_states:
-        target_residency = c_state.target_residency_s
-        transition_time = c_state.transition_time_s
-        if transition_time > latency_limit:
-            continue
-        if predicted_idle_duration > target_residency:
-            gap = predicted_idle_duration - target_residency
-            current_gap = predicted_idle_duration - chosen_c_state.target_residency_s
-            if gap < current_gap:
-                chosen_c_state = c_state
+
+    # === We assume system tasks floats on the cores. Which means, last 8 idle durations are not accurate for OS level
+    # idle state modeling (a core could be executing a system task). So we only let C1. Enter to C6 is not allowed. ===
+    # for c_state in c_states:
+    #     target_residency = c_state.target_residency_s
+    #     transition_time = c_state.transition_time_s
+    #     if transition_time > latency_limit:
+    #         continue
+    #     if predicted_idle_duration > target_residency:
+    #         gap = predicted_idle_duration - target_residency
+    #         current_gap = predicted_idle_duration - chosen_c_state.target_residency_s
+    #         if gap < current_gap:
+    #             chosen_c_state = c_state
 
     return chosen_c_state
 
