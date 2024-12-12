@@ -7,7 +7,8 @@ from enum import IntEnum
 import numpy as np
 
 from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S, \
-    generate_initial_frequencies, calc_delta_vth, calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL
+    generate_initial_frequencies, calc_ADH, calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL, \
+    calc_long_term_vth_shift
 from core_residency import task_schedule_linux
 from instance import Instance, CpuTaskType
 from simulator import clock
@@ -39,8 +40,9 @@ class Core:
     forced_to_sleep: bool = False
 
     # init for all params.
-    def __init__(self, id: int, f_init: float = 2.25 * math.pow(10, 9), temp_init=54):
+    def __init__(self, processor_id:uuid, id: int, f_init: float = 2.25 * math.pow(10, 9), temp_init=54):
         self.id = id
+        self.processor_id = processor_id
         self.task = None
         self.c_state = CStates.C1.value
         self.last_idle_durations = []
@@ -49,9 +51,36 @@ class Core:
         self.freq = f_init
         self.freq_0 = f_init
         self.last_state_change_time = 0.0
-        self.vth_delta = 0.0
+        self.vth_shift = 0.0
+        self.cum_aged_time = 0.0
         self.freq_nominal = 2.25 * math.pow(10, 9) # AMD EPCY 7742 base frequency is 2.25 GHz
         self.forced_to_sleep = False
+        self.last_temp_update = 0.0
+
+    def set_temp(self, new_temp):
+        clk = clock()
+
+        # update aging effects.
+        prev_period_tmp = self.temp
+        was_sleep = self.forced_to_sleep
+        prev_period_length = clk - self.last_temp_update
+
+        if was_sleep:
+            self.vth_shift = self.vth_shift
+        else:
+            self.vth_shift = calc_long_term_vth_shift(vth_old=self.vth_shift, t_temp=prev_period_tmp, t_length=prev_period_length)
+        self.cum_aged_time += prev_period_length
+        # if self.cum_aged_time > clk:
+        #     print(f"Error: aged_time: {self.cum_aged_time} > clk: {clk} | Core {self.processor_id}[{self.id}] temp: {self.temp} -> {new_temp}, clock: {clock()}, t_elapsed: {t_elapsed}, was_sleep: {was_sleep}, vth_delta: {vth_delta}, aged_time: {self.cum_aged_time}")
+        fq_new = calc_aged_freq(initial_freq=self.freq_0, cum_delta_vth=self.vth_shift)
+        self.freq = fq_new
+
+        # if self.id == 0:
+        #     print(f"Core {self.processor_id}[{self.id}] temp: {self.temp} -> {new_temp}, clock: {clock()}, t_elapsed: {t_elapsed}, was_sleep: {was_sleep}, vth_delta: {vth_delta}, aged_time: {self.aged_time}")
+
+        # set new core temperature.
+        self.temp = new_temp
+        self.last_temp_update = clk
 
     def __str__(self):
         return (
@@ -72,6 +101,8 @@ class Core:
             'temp_c': self.temp,
             'freq': self.freq,
             'health': self.freq / self.freq_0,
+            'cum_aged_time': self.cum_aged_time,
+            'cum_vth_delta': self.vth_shift,
         }
 
 
@@ -279,8 +310,10 @@ class CPU(Processor):
         # Now we can use core_count to initialize cpu_cores
         process_variation_induced_initial_core_fq = generate_initial_frequencies(n_cores=self.core_count)
 
+        self.id = uuid.uuid4()
+
         # initial temperature is 54 degrees celcius. Data modelled after experiments from Green Core testbed.
-        self.cpu_cores = [Core(id=idx, f_init=init_fq, temp_init=Temperatures.C0_POLL) for idx, init_fq in
+        self.cpu_cores = [Core(processor_id=self.id, id=idx, f_init=init_fq, temp_init=Temperatures.C0_POLL.value) for idx, init_fq in
                           enumerate(process_variation_induced_initial_core_fq)]
         self.core_activity_log = []
         self.oversubscribed_task_count_log = 0
@@ -303,7 +336,6 @@ class CPU(Processor):
         }
 
         self.sleep_manager_logs = []
-        self.id = uuid.uuid4()
 
     # todo: check if task to core balance it + or -. then trigger periodic event to adjust the core count.
     def assign_core_to_cpu_task(self, task, override_task_description=None):
@@ -337,7 +369,7 @@ class CPU(Processor):
             self.core_oversubscribe_tasks['core_oversubscribe_tasks'] = self.core_oversubscribe_tasks['core_oversubscribe_tasks'] + 1
             return -1, 0.0, 1 # there was no free core to assign. Task is assumed to be oversubscribing cpu.
 
-        self.update_aging(assigned_core)
+        #self.update_aging(assigned_core)
 
         # set the core to serve
         # print(task.value)
@@ -345,7 +377,8 @@ class CPU(Processor):
         if override_task_description is not None:
             assigned_core.task = override_task_description
         assigned_core.c_state = CStates.C0.value  # set core to busy
-        assigned_core.temp = Temperatures.C0_RTEVAL # model temperature for executing task
+        #assigned_core.temp = Temperatures.C0_RTEVAL # model temperature for executing task
+        assigned_core.set_temp(new_temp=Temperatures.C0_RTEVAL.value)
         assigned_core.last_idle_durations.append(clock() - assigned_core.last_idle_set_time)
         assigned_core.last_idle_set_time = None
 
@@ -374,7 +407,7 @@ class CPU(Processor):
         self.free(core)
 
     def free(self, core):
-        self.update_aging(core)
+        #self.update_aging(core)
         # debug
         if ENABLE_DEBUG_LOGS:
             print(f"Release core: {core.id} from task: {core.task} at time: {clock()}")
@@ -384,7 +417,8 @@ class CPU(Processor):
         next_c_state = get_c_state_from_idle_governor(last_8_idle_durations_s=core.last_idle_durations,
                                                       latency_limit_core_wake_s=APPROX_INFINITY_S)
         core.c_state = next_c_state
-        core.temp = next_c_state.temp  # model temperature for idle core
+        #core.temp = next_c_state.temp  # model temperature for idle core
+        core.set_temp(new_temp=next_c_state.temp.value)
         core.last_idle_set_time = clock()
         self.log_cpu_state(core=core, time_to_wake=None)
 
@@ -445,14 +479,23 @@ class CPU(Processor):
             'asleep_cores': len(self.cpu_cores) - active_cores,
         })
 
-    def update_aging(self, assigned_core):
-        clk = clock()
-        time_delta_since_last_state_change = clk - assigned_core.last_state_change_time
-        assigned_core.last_state_change_time = clk
-        vth_delta = calc_delta_vth(t_elapsed_time=time_delta_since_last_state_change, temp_kelvin=assigned_core.temp)
-        assigned_core.vth_delta += vth_delta
-        aged_freq = calc_aged_freq(initial_freq=assigned_core.freq_0, delta_vth=assigned_core.vth_delta)
-        assigned_core.freq = aged_freq
+    # def update_aging(self, assigned_core):
+    #     clk = clock()
+    #
+    #     time_delta_since_last_state_change = clk - assigned_core.last_state_change_time
+    #     assigned_core.last_state_change_time = clk
+    #
+    #     is_sleep = assigned_core.forced_to_sleep
+    #     if is_sleep:
+    #         vth_delta = 0.0 # stress is zero when core forced to sleep.Else,
+    #         # there is a possibility that a floating task or LLM task used the core,
+    #         # causing the stress.
+    #     else:
+    #         vth_delta = calc_ADH(t_elapsed_time=time_delta_since_last_state_change, temp_celsius=assigned_core.temp.value)
+    #
+    #     assigned_core.vth_delta += vth_delta
+    #     aged_freq = calc_aged_freq(initial_freq=assigned_core.freq_0, delta_vth=assigned_core.vth_delta)
+    #     assigned_core.freq = aged_freq
 
     def get_a_core_to_assign(self):
 
@@ -536,6 +579,7 @@ class CPU(Processor):
         sleep_count = 0
         for idx in range(len(free_awake_cores)):
             core = free_awake_cores[idx]
+            #self.update_aging(core)
             self.force_sleep(core)
             self.log_cpu_state(core=core, time_to_wake=None)
             sleep_count += 1
@@ -553,6 +597,7 @@ class CPU(Processor):
         wake_count = 0
         for idx in range(len(asleep_cores)):
             core = asleep_cores[idx]
+            #self.update_aging(core)
             self.force_wake(core)
             self.log_cpu_state(core=core, time_to_wake=None)
             wake_count += 1
@@ -560,15 +605,15 @@ class CPU(Processor):
                 break
 
     def force_sleep(self, core):
+        core.set_temp(new_temp=Temperatures.C6.value) # needs to be at top.
         core.forced_to_sleep = True
         core.task = None
         core.c_state = CStates.C6.value
-        core.temp = Temperatures.C6
 
     def force_wake(self, core):
+        core.set_temp(new_temp=Temperatures.C0_POLL.value) # needs to be at top.
         core.forced_to_sleep = False
         core.c_state = CStates.C1.value
-        core.temp = Temperatures.C0_POLL
 
 @dataclass(kw_only=True)
 class GPU(Processor):

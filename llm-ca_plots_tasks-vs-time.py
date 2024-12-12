@@ -73,4 +73,4 @@ for rate in [str(rate) for rate in range(30, 251, 20)]:
 
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(top_root + "/temp_results/" + str(rate) + ".png")
+    plt.savefig(top_root + "/temp_results/overall_" + str(rate) + ".png")

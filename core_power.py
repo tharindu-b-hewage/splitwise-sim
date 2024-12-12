@@ -36,10 +36,10 @@ class CState:
         )
 
 
-class Temperatures(IntEnum):
-    C0_RTEVAL = 54
+class Temperatures(float, Enum):
+    C0_RTEVAL = 54.00
     C0_POLL = 51.08
-    C6 = 48
+    C6 = 48.00
 
 
 class CStates(Enum):
@@ -388,19 +388,38 @@ ATLAS_PARAMS = {
 }
 
 
-def calc_delta_vth(t_elapsed_time=0.0, temp_kelvin=300):
+def calc_long_term_vth_shift(vth_old, t_length, t_temp, n=0.17):
+    """
+    We use a recursive vth calculation model from,
+    Moghaddasi, I., Fouman, A., Salehi, M. E., & Kargahi, M. (2018). Instruction-level NBTI stress estimation and its
+    application in runtime aging prediction for embedded processors. IEEE Transactions on Computer-Aided Design of
+    Integrated Circuits and Systems, 38(8), 1427-1437.
+
+    Split time into each measurement interval. For each interval, time length and temperature is given.
+
+    t_length: time in seconds
+    t_temp: temperature in Celsius
+    """
+    ADH = calc_ADH(temp_celsius=t_temp)
+
+    f_1 = vth_old / ADH
+    f_2 = math.pow(f_1, 1 / n)
+    vth_new = ADH * math.pow((f_2 + t_length), n)
+    return vth_new
+
+
+def calc_ADH(temp_celsius=26.0, n=0.17):
     """
     Calculate the shift in threshold voltage.
 
     Source: ATLAS paper.
     """
+    temp_kelvin = temp_celsius + 273.15
 
     lithography = '22nm'
 
-    Y_stress_mv = 50  # Stress voltage in mV for NBTI
-    n = 0.17
-    K_B_boltzman_constant = 8.617e-5
-    E_0 = 0.189  # eV
+    K_B_boltzman_constant = 0.00008617
+    E_0 = 0.1897  # eV
     B = 0.075  # nm/V
     t_ox = ATLAS_PARAMS[lithography]['t_ox']
     Vdd = ATLAS_PARAMS[lithography]['Vdd']
@@ -408,18 +427,22 @@ def calc_delta_vth(t_elapsed_time=0.0, temp_kelvin=300):
     A_T_Vdd = (math.exp(-E_0 / (K_B_boltzman_constant * temp_kelvin))
                * math.exp((B * Vdd) / (t_ox * K_B_boltzman_constant * temp_kelvin)))
 
-    '''
-    SUIT paper: "modern sub 20 nm FinFET transistors degrades by approximately 15 % over a time span of 10 years at >100 C"
-    Solving the below equation for 22nm lithography: running the core at 100 celcius for 10 years, the increase of 
-    delta_vth is 0.15. Using that, k = 0.18026
-    '''
-    k_fitting_param = 0.18026
-    delta_vth = k_fitting_param * A_T_Vdd * math.pow(Y_stress_mv, n) * math.pow(t_elapsed_time, n)
+    """ATLAS: for 22nm, worstcase degradation is 30% after 10 years. Our system worst temperature is 54.
+    If a core continously operate at 54C with 1.0 stress (full utilization) for 10 years, then frequency should degrade by 30%.
+    Solving the delta_vth equation for this scenario yield following fitting parameter.
+    """
+    k_fitting_param = 1.06980863
 
-    return delta_vth
+    # we assume that all tasks yield 1.0 stress (max utilization). Even not execute a task, if core is awake, it might serve floating sytem task.
+    # in our model, only forced sleep cores are truly having 0 stress. Caller should not call this function for sleeping cores.
+    Y = 1.0  # amount of stress.
+
+    #delta_vth = k_fitting_param * A_T_Vdd * math.pow(Y, n) * math.pow(t_elapsed_time, n)
+    ADH = k_fitting_param * A_T_Vdd * math.pow(Y, n)
+    return ADH
 
 
-def calc_aged_freq(initial_freq, delta_vth):
+def calc_aged_freq(initial_freq, cum_delta_vth):
     """
     Calculate the core frequency w.r.t. aging. initial frequency is the process variation induced initial frequency of
     the core.
@@ -428,7 +451,7 @@ def calc_aged_freq(initial_freq, delta_vth):
     Vdd = ATLAS_PARAMS[lithography]['Vdd']
     Vth = ATLAS_PARAMS[lithography]['Vth']
 
-    return initial_freq * (1 - (delta_vth / (Vdd - Vth)))
+    return initial_freq * (1 - (cum_delta_vth / (Vdd - Vth)))
 
 
 import numpy as np
@@ -476,4 +499,67 @@ def generate_initial_frequencies(n_cores=128):
     return frequencies
 
 
+import matplotlib.pyplot as plt
 
+
+def unit_test_aging():
+    # testing cal_delta_vth
+    # T_c = 51.08
+    # time = 1.409
+
+    plt.figure(figsize=(7, 4))
+
+    f_o = 2.7
+
+    t_slots = [54.0, 51.08, 48.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0]
+    x = plot_aging(f_o, t_slots, lbl='[54.0, 51.08, 48.0]')
+
+    t_slots = [51.08 for _ in range(10)]
+    x = plot_aging(f_o, t_slots, lbl='[54.0 all]')
+
+    t_slots = [51.08 if i % 2 == 0 else -1 for i in range(10)]
+    x = plot_aging(f_o, t_slots, lbl='[54.0 with sleep]')
+
+    t_slots = [54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0]
+    x = plot_aging(f_o, t_slots, lbl='[54.0, 54.0, 54.0]')
+
+    t_slots = [54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0, 54.0]
+    x = plot_aging(f_o, t_slots, lbl='ref:static 54C', is_ref=True)
+
+    plt.xticks(x)
+    plt.grid()
+    plt.legend()
+    plt.xlabel('Years')
+    plt.ylabel('Frequency Degradation (%)')
+    plt.title('NBTI induced aging: Frequency Degradation Over Time')
+    plt.show()
+
+
+def plot_aging(f_o, t_slots, lbl, is_ref=False):
+    x = [0]
+    y = [0]
+    f_now = f_o
+    v_th_now = 0.0
+    for year in range(1, len(t_slots) + 1):
+        elapsed_t = 365 * 24 * 60 * 60
+        T_c = t_slots[year - 1]
+
+        if not is_ref:
+            if T_c is not -1:
+                v_th_now = calc_long_term_vth_shift(vth_old=v_th_now, t_length=elapsed_t, t_temp=54.0)
+            else:
+                v_th_now = v_th_now
+            f_now = calc_aged_freq(initial_freq=f_o, cum_delta_vth=v_th_now)
+        else:
+            v_th_now = calc_long_term_vth_shift(vth_old=0, t_length=elapsed_t * year, t_temp=54.0)
+            f_now = calc_aged_freq(initial_freq=f_o, cum_delta_vth=v_th_now)
+
+        x.append(year)
+        degredation = round((f_o - f_now) * 100, 2) / f_o
+        y.append(degredation)
+    # plot y vs x
+    plt.plot(x, y, marker='o', label=lbl)
+    return x
+
+
+#unit_test_aging()
