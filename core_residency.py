@@ -1,3 +1,5 @@
+import random
+
 from scipy.stats import gaussian_kde
 import numpy as np
 import pandas as pd
@@ -78,7 +80,7 @@ def core_id_sampler(df, bw_adjust=0.1):
         yield int(np.round(kde.resample(1)[0]))
 
 
-def task_schedule_linux(cpu_cores, max_retries):
+def task_schedule_linux(cpu_cores):
     """Implements core assignment behavior observed in the energy inference project [1].
 
     This function collects telemetry data from inference tasks [1] to observe CPU core residency. Based on the typical
@@ -89,9 +91,8 @@ def task_schedule_linux(cpu_cores, max_retries):
     [1] https://github.com/grantwilkins/energy-inference.git
     """
     free_core_ids = [core.id for core in cpu_cores if core.task is None]
-    # if len(free_core_ids) == 0:
-    #     raise ValueError("No free cores are available")
 
+    max_retries = len(free_core_ids)
     core_id = None
     retries = 0
     while core_id is None:
@@ -101,7 +102,7 @@ def task_schedule_linux(cpu_cores, max_retries):
             retries += 1
         if retries >= max_retries:
             if len(free_core_ids) > 0:
-                core_id = free_core_ids[0]
+                core_id = random.choice(free_core_ids)
             else:
                 return None
 

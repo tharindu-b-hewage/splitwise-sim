@@ -437,7 +437,7 @@ def calc_ADH(temp_celsius=26.0, n=0.17):
     # in our model, only forced sleep cores are truly having 0 stress. Caller should not call this function for sleeping cores.
     Y = 1.0  # amount of stress.
 
-    #delta_vth = k_fitting_param * A_T_Vdd * math.pow(Y, n) * math.pow(t_elapsed_time, n)
+    # delta_vth = k_fitting_param * A_T_Vdd * math.pow(Y, n) * math.pow(t_elapsed_time, n)
     ADH = k_fitting_param * A_T_Vdd * math.pow(Y, n)
     return ADH
 
@@ -457,7 +457,90 @@ def calc_aged_freq(initial_freq, cum_delta_vth):
 import numpy as np
 
 
+def gen_init_fq(n_cores=128):
+    """
+    Generates the initial frequencies for a given number of processor cores
+    based on process parameters modeled as a Gaussian distribution. The function
+    calculates the correlations of process parameters across a 2D grid of tiles
+    in each core and derives the maximum frequency (f_max) for each core.
+
+    Process variation model is derived from the following paper: Raghunathan, B., Turakhia, Y., Garg, S., & Marculescu,
+    D. (2013, March). Cherry-picking: Exploiting process
+    variations in dark-silicon homogeneous chip multi-processors. In 2013 Design, Automation & Test in Europe
+    Conference & Exhibition (DATE) (pp. 39-44). IEEE.
+
+    Args:
+    - n_cores (int, optional): The number of processor cores. Defaults to 128.
+
+    Returns:
+    - List[float]: A list of maximum frequencies (f_max) for the given number
+      of cores.
+
+    Attributes:
+    - f_nom (float): The nominal frequency of the processor in GHz, set to 2.25 GHz.
+    - N (int): The grid dimension for the core, set to 100 for a 100x100 grid.
+    - mu_p (float): Mean process parameter value derived from the nominal frequency.
+    - sig_p (float): Standard deviation of the process parameter, set as
+      10% of mu_p.
+    """
+    f_nom = 2.25  # GHz
+
+    # We assume that critical paths are uniformly distributed across the core (all grid tiles).
+    N = 10  # 100x100 grid
+
+    """
+    K_dash = 1 and say no process variations. Then, f_max of the core = 1 * min (1 / process_parameter). No pro. para.
+    means f_max = 1/ pro.para. Then f_max must match nominal fq. Which derives, pro. para. = 1 / f_nominal. Without 
+    variations, pro.para. should match the mean of the gaussian dst, to which pro.para is modelled. Thus, mu_p = 1 / f_nominal.
+    """
+    mu_p = 1.0 / f_nom
+    sig_p = 0.1 * mu_p  # 10% of mu_p
+
+    fqs = []
+    for idx in range(n_cores):
+        print(f"Generating initial frequency for a core: {idx}...")
+
+        # Grid point coordinates
+        x, y = np.meshgrid(np.arange(N), np.arange(N))
+        grid_points = np.column_stack([x.ravel(), y.ravel()])  # Shape (N*N, 2)
+
+        # Calculate pairwise Euclidean distances
+        distances = np.linalg.norm(grid_points[:, np.newaxis, :] - grid_points[np.newaxis, :, :], axis=2)
+
+        """
+        Estimate half-of die with half of N_chip. At that distance apart, correlation coefficient of pro. paras. are 0.1.
+        """
+        alpha = 4.60512 / N # from cherry pick paper: halfway distance, correlation < 0.1. Solve for that to get this equation.
+
+        correlation_matrix = np.exp(-1 * alpha * distances)
+
+        # Create covariance matrix
+        covariance_matrix = (sig_p ** 2) * correlation_matrix
+
+        # Generate samples using multivariate normal distribution
+        rho_vals = np.random.multivariate_normal(
+            mean=np.full(N * N, mu_p),  # Mean vector
+            cov=covariance_matrix  # Covariance matrix
+        )
+
+        # Reshape samples to match the grid shape
+        rho_vals = rho_vals.reshape(N, N)
+
+        # take inverse of each value in the rho_vals
+        rho_vals = 1 / rho_vals
+
+        # take minimum of the rho_vals
+        f_max = min(rho_vals.flatten())
+        fqs.append(f_max)
+
+    return fqs
+
+
 def generate_initial_frequencies(n_cores=128):
+    """Raghunathan, B., Turakhia, Y., Garg, S., & Marculescu, D. (2013, March). Cherry-picking: Exploiting process
+    variations in dark-silicon homogeneous chip multi-processors. In 2013 Design, Automation & Test in Europe
+    Conference & Exhibition (DATE) (pp. 39-44). IEEE.
+    """
     frequencies = []
     CORE_FINE_GRID_LENGTH = 10
     for num_cores in range(n_cores):
@@ -500,6 +583,15 @@ def generate_initial_frequencies(n_cores=128):
 
 
 import matplotlib.pyplot as plt
+
+
+def unit_test_pv_induced_fq():
+    # fqs = gen_init_fq(n_cores=128)
+    fqs = gen_init_fq(n_cores=1)
+    # # plot distribution
+    # plt.hist(fqs, bins=len(fqs), color='blue', edgecolor='black')
+    # plt.title('PV-led Frequency Distribution (nominal is 2.25 GHz)')
+    # plt.show()
 
 
 def unit_test_aging():
@@ -545,7 +637,7 @@ def plot_aging(f_o, t_slots, lbl, is_ref=False):
         T_c = t_slots[year - 1]
 
         if not is_ref:
-            if T_c is not -1:
+            if T_c != -1:
                 v_th_now = calc_long_term_vth_shift(vth_old=v_th_now, t_length=elapsed_t, t_temp=54.0)
             else:
                 v_th_now = v_th_now
@@ -562,4 +654,5 @@ def plot_aging(f_o, t_slots, lbl, is_ref=False):
     return x
 
 
-#unit_test_aging()
+# unit_test_aging()
+#unit_test_pv_induced_fq()

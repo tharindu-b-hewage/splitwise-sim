@@ -8,7 +8,7 @@ import numpy as np
 
 from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S, \
     generate_initial_frequencies, calc_ADH, calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL, \
-    calc_long_term_vth_shift
+    calc_long_term_vth_shift, gen_init_fq
 from core_residency import task_schedule_linux
 from instance import Instance, CpuTaskType
 from simulator import clock
@@ -26,21 +26,14 @@ CPU_CONFIGS = None
 
 class Core:
     """A core in the cpu"""
-    id: int
-    task: str = None
-    c_state: CState = CStates.C1.value
-    last_idle_durations = []
-    last_idle_set_time: float = 0.0  # last time that the core is set to idle.
-    temp: float  # temperature of the core in degrees of celcius
-    freq_nominal: float  # expected frequency without aging in Hz
-    freq_0: float  # initial frequency of the core before aging in Hz
-    freq: float  # frequency of the core in Hz
-    vth_delta: float
-    last_state_change_time: float = 0.0  # last time that the core state is changed.
-    forced_to_sleep: bool = False
+    MAX_FQ = 0.0
 
     # init for all params.
     def __init__(self, processor_id:uuid, id: int, f_init: float = 2.25 * math.pow(10, 9), temp_init=54):
+        # keep track of max frequency for normalization purpose.
+        if Core.MAX_FQ < f_init:
+            Core.MAX_FQ = f_init
+
         self.id = id
         self.processor_id = processor_id
         self.task = None
@@ -70,13 +63,8 @@ class Core:
         else:
             self.vth_shift = calc_long_term_vth_shift(vth_old=self.vth_shift, t_temp=prev_period_tmp, t_length=prev_period_length)
         self.cum_aged_time += prev_period_length
-        # if self.cum_aged_time > clk:
-        #     print(f"Error: aged_time: {self.cum_aged_time} > clk: {clk} | Core {self.processor_id}[{self.id}] temp: {self.temp} -> {new_temp}, clock: {clock()}, t_elapsed: {t_elapsed}, was_sleep: {was_sleep}, vth_delta: {vth_delta}, aged_time: {self.cum_aged_time}")
         fq_new = calc_aged_freq(initial_freq=self.freq_0, cum_delta_vth=self.vth_shift)
         self.freq = fq_new
-
-        # if self.id == 0:
-        #     print(f"Core {self.processor_id}[{self.id}] temp: {self.temp} -> {new_temp}, clock: {clock()}, t_elapsed: {t_elapsed}, was_sleep: {was_sleep}, vth_delta: {vth_delta}, aged_time: {self.aged_time}")
 
         # set new core temperature.
         self.temp = new_temp
@@ -100,10 +88,14 @@ class Core:
             'last_idle_set_time': self.last_idle_set_time,
             'temp_c': self.temp,
             'freq': self.freq,
-            'health': self.freq / self.freq_0,
+            'health': self.get_health(),
             'cum_aged_time': self.cum_aged_time,
             'cum_vth_delta': self.vth_shift,
         }
+
+    def get_health(self):
+        #return self.freq / self.freq_0
+        return self.freq / Core.MAX_FQ
 
 
 class ProcessorType(IntEnum):
@@ -207,7 +199,7 @@ class Processor():
         pass
 
 
-def task_schedule_zhao23(cpu_cores, max_retries):
+def task_schedule_zhao23(cpu_cores):
     """Zhao et al. 2023:
     Proposes a task scheduling approach that can be enforced at the resource management level.
     We employ it at the cloud orchestration level. The idea behind the approach is, 'the OS can migrate and
@@ -226,8 +218,8 @@ def task_schedule_zhao23(cpu_cores, max_retries):
             continue
 
         # select the core with the highest health.
-        selected_core_health = selected_core.freq / selected_core.freq_0
-        core_health = core.freq / core.freq_0
+        selected_core_health = selected_core.get_health()
+        core_health = core.get_health()
         if core_health > selected_core_health:
             selected_core = core
 
@@ -241,7 +233,7 @@ def task_schedule_zhao23(cpu_cores, max_retries):
     return selected_core
 
 
-def task_schedule_proposed(cpu_cores, max_retries):
+def task_schedule_proposed(cpu_cores):
     selected_core = None
     selected_idle_score = 0.0
     for core in cpu_cores:
@@ -308,7 +300,9 @@ class CPU(Processor):
     def __post_init__(self):
 
         # Now we can use core_count to initialize cpu_cores
-        process_variation_induced_initial_core_fq = generate_initial_frequencies(n_cores=self.core_count)
+        #process_variation_induced_initial_core_fq = generate_initial_frequencies(n_cores=self.core_count)
+
+        process_variation_induced_initial_core_fq = gen_init_fq(n_cores=self.core_count)
 
         self.id = uuid.uuid4()
 
@@ -520,12 +514,12 @@ class CPU(Processor):
         awaken_cores = list(filter(lambda c: not c.forced_to_sleep, self.cpu_cores))
 
         task_allocation_algo = CPU_CONFIGS.get("task_allocation_algo")
-        if task_allocation_algo == 'linux':
-            assigned_core = task_schedule_linux(cpu_cores=awaken_cores, max_retries=len(awaken_cores))
-        elif task_allocation_algo == 'zhao23':
-            assigned_core = task_schedule_zhao23(cpu_cores=awaken_cores, max_retries=len(awaken_cores))
-        elif task_allocation_algo == 'proposed':
-            assigned_core = task_schedule_proposed(cpu_cores=awaken_cores, max_retries=len(awaken_cores))
+        if task_allocation_algo == "linux":
+            assigned_core = task_schedule_linux(cpu_cores=awaken_cores)
+        elif task_allocation_algo == "zhao23":
+            assigned_core = task_schedule_zhao23(cpu_cores=awaken_cores)
+        elif task_allocation_algo == "proposed":
+            assigned_core = task_schedule_proposed(cpu_cores=awaken_cores)
         else:
             raise ValueError(f"Unknown task allocation algorithm: {task_allocation_algo}")
 
@@ -575,7 +569,7 @@ class CPU(Processor):
         free_awake_cores = list(filter(lambda c: c.task is None and not c.forced_to_sleep, cores))
 
         # health is calculated as the current degraded frequency over the nominal frequency.
-        free_awake_cores = sorted(free_awake_cores, key=lambda c: c.freq / c.freq_0) # health low to high.
+        free_awake_cores = sorted(free_awake_cores, key=lambda c: c.get_health()) # health low to high.
         sleep_count = 0
         for idx in range(len(free_awake_cores)):
             core = free_awake_cores[idx]
@@ -593,7 +587,7 @@ class CPU(Processor):
         asleep_cores = list(filter(lambda c: c.forced_to_sleep, cores))
 
         # health is calculated as the current degraded frequency over the nominal frequency.
-        asleep_cores = sorted(asleep_cores, key=lambda c: c.freq / c.freq_0, reverse=True) # health low to high.
+        asleep_cores = sorted(asleep_cores, key=lambda c: c.get_health(), reverse=True) # health low to high.
         wake_count = 0
         for idx in range(len(asleep_cores)):
             core = asleep_cores[idx]
