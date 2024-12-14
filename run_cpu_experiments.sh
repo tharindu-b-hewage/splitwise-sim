@@ -16,14 +16,31 @@ types=("conv")
 # debug
 rates=("30")
 
+techniques=("linux" "zhao23" "proposed")
+
 export HYDRA_FULL_ERROR=1
 
-# Loop over each type
-for type in "${types[@]}"; do
-  # Loop over rates from 30 to 250 with an interval of 10
-for rate in "${rates[@]}"; do
-    # Your commands go here. For example:
-    echo "Experiment: type: $type with rate: $rate"
-    sh scripts/run_splitwise_ha_cpu.sh "$type" "$rate"
-  done
+TEMP_RESULTS_FOLDER="results/0/splitwise_5_17"
+FINAL_RESULTS_FOLDER="/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/experiments"
+BK_RESULTS_FOLDER="/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/bk"
+
+# Create a folder with the current date and time in the BK_RESULTS_FOLDER
+TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+BK_TIMESTAMPED_FOLDER="$BK_RESULTS_FOLDER/$TIMESTAMP"
+mkdir -p "$BK_TIMESTAMPED_FOLDER"
+
+# Move all folders in the FINAL_RESULTS_FOLDER to the new backup location
+mv "$FINAL_RESULTS_FOLDER"/* "$BK_TIMESTAMPED_FOLDER"
+
+for technique in "${techniques[@]}"; do
+  echo "technique: ""$technique"
+  sed -i '' "s/^task_allocation_algo=.*/task_allocation_algo=$technique/" cpu_configs.properties
+  for type in "${types[@]}"; do
+    for rate in "${rates[@]}"; do
+        echo "--- type: $type with rate: $rate"
+        sh scripts/run_splitwise_ha_cpu.sh "$type" "$rate"
+      done
+    done
+  mkdir "$FINAL_RESULTS_FOLDER"/"$technique"
+  mv "$TEMP_RESULTS_FOLDER"/* "$FINAL_RESULTS_FOLDER"/"$technique"
 done

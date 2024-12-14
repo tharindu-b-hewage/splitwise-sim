@@ -1,13 +1,12 @@
+import csv
 import math
 import os
 import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-import numpy as np
-
-from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, CState, APPROX_INFINITY_S, \
-    generate_initial_frequencies, calc_ADH, calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL, \
+from core_power import CStates, calculate_core_power, get_c_state_from_idle_governor, APPROX_INFINITY_S, \
+    calc_aged_freq, Temperatures, CPU_CORE_ADJ_INTERVAL, \
     calc_long_term_vth_shift, gen_init_fq
 from core_residency import task_schedule_linux
 from instance import Instance, CpuTaskType
@@ -265,50 +264,18 @@ class CPU(Processor):
     of a single logical core in our setup. Existing production AMD EPCY CPUs are able to provide this much of CPU cores.
     Examples: https://www.titancomputers.com/AMD-EPYC-Genoa-9004-Series-up-to-256-Cores-Workstation-PC-s/1270.htm
 
-    todo: Baseline technique. Implement the support for DVFS.
-        - From Nautilus'19: 13 DVFS steps. each step drops temp from peak 77 to idle 48. thats 29 degrees drop. For
-        that they measure 2 degree drop per step. Ours task execution temp is 54@C0 (green cores testbed). Sleep is 48.
-        thats 6 degrees drop. For 13 steps, it counts to 0.414 degrees per step. When we implement DVFS technique, we
-        need to model this temperature drop per step.
-        Our proposed: Wake is 54 degrees and sleep is 48 degrees. When ours sleep, core clock is stopped. No switching
-        activity. So, there is no NBTI aging.
-
-    todo:   1.  [implemented] Implement the core temperature changes based on C0/C1 and C6 states (54 to 48): done, needs testing
-            2.  [implemented] Implement the over time aging: temperature induced frequency drop: done, needs testing
-            3.  [implemented] Implement the frequency degreation impact to LLM inference. Each executing task now takes more time,
-                so increased overhead time. : done, needs testing
-            4.  [implemented] Run the vanilla system and plot the frequency degregation over time (aging), and impact to app metrics: TTFT, TBT
-            5.  [implemented] Implement the Zhaos23 technique. Verify/fix plots.
-            6.  [Pending] Implement the proposed technique (Sleep/Wake sensitive to request rate. Dynamic core-set selection based
-            on relative frequency(relative health)). Verify/fix plots.
-
-    todo: Identified issues:
-
     Attributes:
         processor_type (ProcessorType): The type of the Processor.
         cpu_cores (list[bool]): The logical cores of the CPU. Boolean state indicates if the core is in use.
     """
     processor_type: ProcessorType = ProcessorType.CPU
     core_count: int
-    # cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(core_count)])
-    #cpu_cores: list[Core] = field(default_factory=lambda: [Core(id=idx) for idx in range(1)])
-    #core_activity_log: []
-    #oversubscribed_task_count_log: int = 0
-    #total_task_count_log: int = 0
-
+    cpu_idx: int = 0
 
     def __post_init__(self):
 
-        # Now we can use core_count to initialize cpu_cores
-        #process_variation_induced_initial_core_fq = generate_initial_frequencies(n_cores=self.core_count)
-
-        process_variation_induced_initial_core_fq = gen_init_fq(n_cores=self.core_count)
-
         self.id = uuid.uuid4()
-
-        # initial temperature is 54 degrees celcius. Data modelled after experiments from Green Core testbed.
-        self.cpu_cores = [Core(processor_id=self.id, id=idx, f_init=init_fq, temp_init=Temperatures.C0_POLL.value) for idx, init_fq in
-                          enumerate(process_variation_induced_initial_core_fq)]
+        self.cpu_cores = None # init later. check 'init_fqs' method.
         self.core_activity_log = []
         self.oversubscribed_task_count_log = 0
         self.total_task_count_log = 0
@@ -330,6 +297,43 @@ class CPU(Processor):
         }
 
         self.sleep_manager_logs = []
+
+    def init_fqs(self, server_id):
+        process_variation_induced_initial_core_fq = self.get_pv_induced_fqs(server_id)
+        # initial temperature is 54 degrees celcius. Data modelled after experiments from Green Core testbed.
+        self.cpu_cores = [Core(processor_id=self.id, id=idx, f_init=init_fq, temp_init=Temperatures.C0_POLL.value) for
+                          idx, init_fq in
+                          enumerate(process_variation_induced_initial_core_fq)]
+
+    def get_pv_induced_fqs(self, server_id):
+        def load_or_generate_frequencies(file_path, server_id, n_cores):
+            if not os.path.exists(file_path):
+                with open(file_path, 'w', newline='', encoding='UTF-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["server_id", "core_frequencies"])  # Write header
+                generated_frequencies = gen_init_fq(n_cores=n_cores)
+                with open(file_path, 'a', newline='', encoding='UTF-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerow([server_id, ','.join(map(str, generated_frequencies))])
+                return generated_frequencies
+
+            with open(file_path, 'r', newline='', encoding='UTF-8') as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    if row["server_id"] == str(server_id):
+                        return list(map(float, row["core_frequencies"].split(',')))
+
+            generated_frequencies = gen_init_fq(n_cores=n_cores)
+            with open(file_path, 'a', newline='', encoding='UTF-8') as file:
+                writer = csv.writer(file)
+                writer.writerow([server_id, ','.join(map(str, generated_frequencies))])
+            return generated_frequencies
+
+        absolute_directory = os.path.dirname(os.path.abspath(__file__))
+        frequency_file_path = os.path.join(absolute_directory, 'cpu_core_frequencies.csv')
+        process_variation_induced_initial_core_fq = load_or_generate_frequencies(frequency_file_path, server_id,
+                                                                                 self.core_count)
+        return process_variation_induced_initial_core_fq
 
     # todo: check if task to core balance it + or -. then trigger periodic event to adjust the core count.
     def assign_core_to_cpu_task(self, task, override_task_description=None):

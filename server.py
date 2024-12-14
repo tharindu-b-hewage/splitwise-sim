@@ -4,6 +4,7 @@ from hydra.utils import instantiate
 
 import utils
 import hardware_repo
+from processor import CPU
 
 from power_model import get_server_power
 from simulator import clock, schedule_event, cancel_event, reschedule_event
@@ -102,6 +103,8 @@ class Server:
         for processor_cfg in processors_cfg:
             for n in range(processor_cfg.count):
                 processor = hardware_repo.get_processor(processor_cfg.name)
+                if isinstance(processor, CPU):
+                    processor.init_fqs(server_id)
                 processors.append(processor)
 
         # TODO: add better network topology / configuration support

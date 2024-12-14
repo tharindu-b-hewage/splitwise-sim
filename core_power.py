@@ -498,7 +498,6 @@ def gen_init_fq(n_cores=128):
 
     fqs = []
     for idx in range(n_cores):
-        print(f"Generating initial frequency for a core: {idx}...")
 
         # Grid point coordinates
         x, y = np.meshgrid(np.arange(N), np.arange(N))
