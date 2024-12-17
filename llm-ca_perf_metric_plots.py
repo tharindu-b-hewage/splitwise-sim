@@ -1,9 +1,11 @@
 import ast
+import math
 import os
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes, mark_inset
 
 CODE_PREFIX = "rr_code_"
 
@@ -181,38 +183,42 @@ def plot_core_health_cv(df):
     metrics = ["cls_m_core_health_cv_p99", "cls_m_core_health_cv_p90", "cls_m_core_health_cv_p50"]
     metrics_lbl = ["p99", "p90", "p50"]
 
-    # Create subplots
-    fig, axes = plt.subplots(nrows=1, ncols=len(metrics), figsize=(5 * len(metrics), 4))
+    def save_to_svg(fig, filename):
+        # Adjust layout
+        fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution of Machine Cores in the Cluster")
+        plt.tight_layout()
+        plt.savefig("temp_results/" + filename)
 
-    for i, _ in enumerate([1]):
+    def plot_row_data(df, tech_used, metrics, metrics_lbl, filename):
+        # Create subplots
+        fig, axes = plt.subplots(nrows=1, ncols=len(metrics), figsize=(4 * len(metrics), 3.1))
         for j, metric in enumerate(metrics):
             ax = axes[j]
+            nrm_val = df[metric].max()
 
-            # Plot for each technique
-            nrm_vals = []
-            for technique in df["technique"].unique():
-                max_metric = df[metric].max()
+            for technique in tech_used:
                 tech_data = df[df["technique"] == technique]
-                nrm_val = tech_data[metric] / max_metric
-                nrm_vals.append(nrm_val)
+                tech_data[metric] = tech_data[metric] / nrm_val
                 ax.plot(
-                    tech_data["rate"],
-                    nrm_val,
+                    tech_data['rate'],
+                    tech_data[metric],
                     marker=IDENTITY_MAP[technique]['marker'],
                     label=technique,
                     color=IDENTITY_MAP[technique]['color']
                 )
 
             ax.set_xlabel("Request Rate (req/s)")
-            ax.set_ylabel('Normalized CV of \nCore Frequency Dist. ' + metrics_lbl[j])
-            # ax.set_yscale("logit")
+            ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' CV of \nCore Frequencies')
             ax.legend()
             ax.grid(True)
 
-    # Adjust layout
-    fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution of Machine Cores in the Cluster")
-    plt.tight_layout()
-    plt.savefig("temp_results/cpu_aging_impact.svg")
+        # Adjust layout
+        fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution in Machines")
+        plt.tight_layout()
+        plt.savefig("temp_results/" + filename)
+
+    plot_row_data(df, ['linux', 'zhao23'], metrics, metrics_lbl, "aging-impact_baselines.svg")
+    plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics, metrics_lbl, "aging-impact_baselines-vs-proposed.svg")
 
 
 ROOT_LOC = "/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/experiments"
