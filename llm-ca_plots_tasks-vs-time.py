@@ -4,13 +4,19 @@ import pandas as pd
 import glob
 import os
 
-for rate in [str(rate) for rate in range(30, 251, 20)]:
-    top_root = "/Users/tharindu/workspace/splitwise-sim"
-    root = top_root + "/results/0/splitwise_5_17"
+ROOT_LOC = "/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/experiments/linux"
+
+is_overall = False
+
+fig = None
+if not is_overall:
+    fig, axes = plt.subplots(2, 3, figsize=(5 * 3, 3 * 2), sharey=True, sharex=True)
+
+for i, rate in enumerate([str(rate) for rate in [30, 80, 130, 180, 230, 250]]):
+    top_root = ROOT_LOC
+    root = top_root
     rate_cmp = "/rr_conv_" + str(rate)
     path = root + rate_cmp + "/0_22/bloom-176b/mixed_pool/cpu_usage"
-    #path = root + rate_cmp + "/21_30/bloom-176b/mixed_pool/cpu_usage"
-    #path = root + rate_cmp + "/18_17/bloom-176b/mixed_pool/cpu_usage"
 
     if not os.path.exists(path):
         print(rate, "do not exist")
@@ -23,10 +29,11 @@ for rate in [str(rate) for rate in range(30, 251, 20)]:
     # Use glob to find all CSV files starting with 'task_log_'
     csv_files = glob.glob('task_log_*.csv')
 
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(16, 12))
+    if is_overall:
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(16, 12))
 
     # Load each CSV file into a DataFrame
-    #max_tasks_log = []
+    # max_tasks_log = []
     machine_tasks = []
     for file in csv_files:
         df = pd.read_csv(file)
@@ -40,37 +47,49 @@ for rate in [str(rate) for rate in range(30, 251, 20)]:
         mem_util = [item[2] for item in data if 1 < item[0] < 599]
         awaken_cores = [item[3] for item in data if 1 < item[0] < 599]
 
-        #max_tasks_log.append(max(number_of_tasks))
+        # max_tasks_log.append(max(number_of_tasks))
         machine_tasks.append(number_of_tasks)
 
         # Plot the data
-        ax1.plot(clock_times, number_of_tasks)
-        ax2.plot(clock_times, awaken_cores)
-        ax3.plot(clock_times, mem_util)
+        if is_overall:
+            ax1.plot(clock_times, number_of_tasks)
+            ax2.plot(clock_times, awaken_cores)
+            ax3.plot(clock_times, mem_util)
 
     # for each list in the machine_tasks, plot a box plot on ax4
-    ax4.boxplot(machine_tasks)
+    if is_overall:
+        ax4.violinplot(machine_tasks)
 
+        ax1.set_title('Tasks For rate' + str(rate))
+        ax1.set_xlabel('Clock Time')
+        ax1.set_ylabel('Number of Tasks')
 
-    #print(max_tasks_log)
+        ax2.set_title('Awaken cores For rate' + str(rate))
+        ax2.set_xlabel('Clock Time')
+        ax2.set_ylabel('Number of Awaken Cores')
 
-    ax1.set_title('Tasks For rate' + str(rate))
-    ax1.set_xlabel('Clock Time')
-    ax1.set_ylabel('Number of Tasks')
+        ax3.set_title('Memory For rate' + str(rate))
+        ax3.set_xlabel('Clock Time')
+        ax3.set_ylabel('Memory Util.')
 
-    ax2.set_title('Awaken cores For rate' + str(rate))
-    ax2.set_xlabel('Clock Time')
-    ax2.set_ylabel('Number of Awaken Cores')
+        ax4.set_title('Running tasks dist. For rate' + str(rate))
+        ax4.set_xlabel('Machine Number')
+        ax4.set_ylabel('Distributions')
 
-    ax3.set_title('Memory For rate' + str(rate))
-    ax3.set_xlabel('Clock Time')
-    ax3.set_ylabel('Memory Util.')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/overall_" + str(rate) + ".svg")
+    else:
+        ax = axes[i // 3][(i % 3)]
+        ax.violinplot(machine_tasks)
 
-    ax4.set_title('Running tasks dist. For rate' + str(rate))
-    ax4.set_xlabel('Clock Time')
-    ax4.set_ylabel('Distributions')
+        ax.set_xlabel('Machine Number')
+        ax.set_ylabel(f'Task Count at Req./s: {rate}')
+        ax.set_xticks(range(1, len(machine_tasks) + 1))
+        ax.grid(True)
 
-
+if not is_overall:
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(top_root + "/temp_results/overall_" + str(rate) + ".png")
+    #plt.suptitle('CPU Tasks')
+    plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/running_tasks.svg")
