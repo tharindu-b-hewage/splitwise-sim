@@ -15,7 +15,7 @@ IDENTITY_MAP = {
         'marker': 'o'
     },
     'zhao23': {
-        'color': '#FFAA0O',
+        'color': '#FFAA00',
         'marker': 'v'
     },
     'proposed': {
@@ -106,77 +106,71 @@ def process_exps(root, exps, prefix, technique):
 
 
 def plot_core_task_diff_data(df):
+    rates_colors = {
+        '30': '#4053d3',
+        '80': '#ddb310',
+        '130': '#b51d14',
+        '180': '#00beff',
+        '230': '#fb49b0',
+        '250': '#00b25d',
+    }
+
     rates = df["rate"].unique()
     n_rates = len(rates)
     techniques = df["technique"].unique()
 
     # Create subplots with one plot per rate
-    # fig, axes = plt.subplots(nrows=1, ncols=n_rates, figsize=(5 * n_rates, 4), sharey=True)
-    fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(5 * len(techniques), 4), sharey=True)
+    fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(5 * len(techniques), 4), sharey=True, sharex=True)
 
     if n_rates == 1:
         axes = [axes]
 
-    # for i, rate in enumerate(rates):
     for i, tech in enumerate(techniques):
 
         ax = axes[i]
         tech_data = df[df["technique"] == tech]
 
+        p90_vals = []
+        p1_vals = []
         for rate in tech_data["rate"].unique():
             rate_data = tech_data[tech_data["rate"] == rate]
             sorted_nrm_diff = sorted(rate_data["nrm_diff"])
             cumsum = np.cumsum(np.ones_like(sorted_nrm_diff)) / len(sorted_nrm_diff)
-            for x, c_sum in enumerate(cumsum):
-                if c_sum > 0.5:
-                    x_thr = x
-                    y_thr = c_sum
-                    break
+            p90_val = np.percentile(sorted_nrm_diff, 90)
+            p1_val = np.percentile(sorted_nrm_diff, 1)
+            p90_vals.append(p90_val)
+            p1_vals.append(p1_val)
+
             ax.plot(
                 sorted_nrm_diff,
                 cumsum,
-                label=tech + '-' + str(rate),
-                color=IDENTITY_MAP[technique]['color'],
+                label=tech + '@' + str(rate) + 'req/s',
+                color=rates_colors[str(rate)],
             )
 
-            # Mark the point where y exceeds the threshold
-            plt.scatter(x_thr, y_thr, color='red', zorder=5, label=f'Exceeds Threshold ({x_thr}, {y_thr})')
+        plot_p90_val = round(max(p90_vals), 3)
+        plot_p1_val = round(min(p1_vals), 3)
+        ax.vlines(x=plot_p90_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='black',
+                  label=f'max. Nrm. Idle. Cores p90 = {plot_p90_val}')
+        ax.vlines(x=plot_p1_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='blue',
+                  label=f'min. Nrm. Idle. Cores p1 = {plot_p1_val}')
 
-            # Add vertical and horizontal lines
-            plt.axhline(y=x_thr, color='gray', linestyle='--', label='Threshold')
-            plt.axvline(x=y_thr, color='red', linestyle='--', label=f'x={x_thr}')
+        ax.set_title(f"{tech}")
 
-            # Annotate the point
-            plt.annotate(f'({x_thr}, {y_thr})',
-                         xy=(x_thr, y_thr),
-                         xytext=(x_thr + 0.5, y_thr + 1),
-                         arrowprops=dict(facecolor='black', arrowstyle='->'),
-                         fontsize=10)
+        if tech != "proposed":
+            ax.set_xlim([-0.3, 1.0])
+        else:
+            ax.set_xlim([-0.3, 1.0])
 
-        # ax = axes[i]
-        # rate_data = df[df["rate"] == rate]
-        #
-        # for technique in rate_data["technique"].unique():
-        #     tech_data = rate_data[rate_data["technique"] == technique]
-        #     sorted_nrm_diff = sorted(tech_data["nrm_diff"])
-        #     cumsum = np.cumsum(np.ones_like(sorted_nrm_diff)) / len(sorted_nrm_diff)
-        #     ax.plot(
-        #         sorted_nrm_diff, cumsum,
-        #         label=technique,
-        #         color=IDENTITY_MAP[technique]['color'],
-        #     )
-
-        ax.set_title(f"Rate: {tech}")
-        ax.set_xlim(-1, 1)
         ax.set_xlabel(
-            "Normalized Core Availability\n(negative == cores oversubscribed, positive == cores under-subscribed)")
+            "Normalized Idle CPU Cores\n(negative == cores oversubscribed)")
         if i == 0:
-            ax.set_ylabel("Cumulative Distribution")
+            ax.set_ylabel("Cum. Dist. of Measurements")
         ax.legend()
         ax.grid(True)
 
     # Adjust layout
-    fig.suptitle("Core Availability for Task Execution")
+    fig.suptitle("Idle CPU Cores Across the Cluster Machines")
     plt.tight_layout()
     plt.savefig("temp_results/core_availability_for_task_execution.svg")
 
@@ -188,7 +182,7 @@ def plot_core_health_cv(df):
     metrics_lbl = ["p99", "p90", "p50"]
 
     # Create subplots
-    fig, axes = plt.subplots(nrows=1, ncols=len(metrics), figsize=(10, 4))
+    fig, axes = plt.subplots(nrows=1, ncols=len(metrics), figsize=(5 * len(metrics), 4))
 
     for i, _ in enumerate([1]):
         for j, metric in enumerate(metrics):
@@ -210,7 +204,7 @@ def plot_core_health_cv(df):
                 )
 
             ax.set_xlabel("Request Rate (req/s)")
-            ax.set_ylabel('Normalized CV of \nCore Frequency Dist.' + metrics_lbl[j])
+            ax.set_ylabel('Normalized CV of \nCore Frequency Dist. ' + metrics_lbl[j])
             # ax.set_yscale("logit")
             ax.legend()
             ax.grid(True)
@@ -258,7 +252,6 @@ if not dev_is_plot_fix:
 
     tot_parsed_core_task_diff_data["rate"] = tot_parsed_core_task_diff_data["rate"].astype(int)
     tot_parsed_core_task_diff_data = tot_parsed_core_task_diff_data.sort_values(by=['rate'])
-
 
     print('saving data to cache...')
     health_data_df.to_csv('health_data_df.csv', index=False)
