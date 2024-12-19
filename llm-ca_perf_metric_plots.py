@@ -39,31 +39,47 @@ def list_files(root, prefix=None):
 def process_machine(m_df):
     # group by column 'id' and traverse each group
     core_health_dst = []
+    worst_core_fq = 1.0
     for name, core_data in m_df.groupby('id'):
         core_data = core_data.sort_values(by='clock')
         # get the last row
         last_row = core_data.iloc[-1]
-        core_health_after = last_row['health']
+        final_core_health = last_row['health']  # health is frequency normalized.
+        core_health_after = final_core_health
         core_health_dst.append(core_health_after)
+
+        if final_core_health < worst_core_fq:
+            worst_core_fq = final_core_health
 
     # calculate the coefficient of variation
     m_core_health_cv = np.std(core_health_dst) / np.mean(core_health_dst)
-    return m_core_health_cv
+    return m_core_health_cv, worst_core_fq
 
 
 def process_cpu_usage_files(cpu_data_loc, m_cpu_usage):
     cls_m_core_health_cv_dst = []
+    cls_m_core_worst_fq_dst = []
     for machine in m_cpu_usage:
         m_df = pd.read_csv(os.path.join(cpu_data_loc, machine))
-        m_core_health_cv = process_machine(m_df)
+        m_core_health_cv, worst_core_fq = process_machine(m_df)
         cls_m_core_health_cv_dst.append(m_core_health_cv)
+        cls_m_core_worst_fq_dst.append(worst_core_fq)
+
     cls_m_core_health_cv_p99 = np.percentile(cls_m_core_health_cv_dst, 99)
     cls_m_core_health_cv_p90 = np.percentile(cls_m_core_health_cv_dst, 90)
     cls_m_core_health_cv_p50 = np.percentile(cls_m_core_health_cv_dst, 50)
+
+    cls_m_core_worst_fq_p99 = np.percentile(cls_m_core_worst_fq_dst, 99)
+    cls_m_core_worst_fq_p90 = np.percentile(cls_m_core_worst_fq_dst, 90)
+    cls_m_core_worst_fq_p50 = np.percentile(cls_m_core_worst_fq_dst, 50)
+
     return {
         "cls_m_core_health_cv_p99": cls_m_core_health_cv_p99,
         "cls_m_core_health_cv_p90": cls_m_core_health_cv_p90,
-        "cls_m_core_health_cv_p50": cls_m_core_health_cv_p50
+        "cls_m_core_health_cv_p50": cls_m_core_health_cv_p50,
+        "cls_m_core_worst_fq_p99": cls_m_core_worst_fq_p99,
+        "cls_m_core_worst_fq_p90": cls_m_core_worst_fq_p90,
+        "cls_m_core_worst_fq_p50": cls_m_core_worst_fq_p50,
     }
 
 
@@ -180,20 +196,16 @@ def plot_core_task_diff_data(df):
 def plot_core_health_cv(df):
     # Extract unique traces and metric types
     # unique_traces = df["trace"].unique()
-    metrics = ["cls_m_core_health_cv_p99", "cls_m_core_health_cv_p90", "cls_m_core_health_cv_p50"]
-    metrics_lbl = ["p99", "p90", "p50"]
-
-    def save_to_svg(fig, filename):
-        # Adjust layout
-        fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution of Machine Cores in the Cluster")
-        plt.tight_layout()
-        plt.savefig("temp_results/" + filename)
+    metrics = ["cls_m_core_health_cv_p99", "cls_m_core_health_cv_p90", "cls_m_core_health_cv_p50",
+               "cls_m_core_worst_fq_p99", "cls_m_core_worst_fq_p90", "cls_m_core_worst_fq_p50"]
+    metrics_lbl = ["p99", "p90", "p50", "p99", "p90", "p50"]
 
     def plot_row_data(df, tech_used, metrics, metrics_lbl, filename):
         # Create subplots
-        fig, axes = plt.subplots(nrows=1, ncols=len(metrics), figsize=(4 * len(metrics), 3.1))
+        fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4 * 3, 3.1 * 2), sharex=True)
         for j, metric in enumerate(metrics):
-            ax = axes[j]
+            row_id = j // 3
+            ax = axes[row_id][j % 3]
             nrm_val = df[metric].max()
 
             for technique in tech_used:
@@ -207,8 +219,14 @@ def plot_core_health_cv(df):
                     color=IDENTITY_MAP[technique]['color']
                 )
 
+                print(f"dev: {tech_data[metric]} {technique}")
+
             ax.set_xlabel("Request Rate (req/s)")
-            ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' CV of \nCore Frequencies')
+
+            if row_id == 0:
+                ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' CV of \nCore Frequencies')
+            else:
+                ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' of worst-case \nCore Frequency')
             ax.legend()
             ax.grid(True)
 
@@ -242,7 +260,7 @@ if not dev_is_plot_fix:
         curr_loc = os.path.join(ROOT_LOC, technique)
         traces = list_dirs(root=curr_loc)
         conv_traces = [trace for trace in traces if CONV_PREFIX in trace]
-        code_traces = [trace for trace in traces if CODE_PREFIX in trace]
+        # code_traces = [trace for trace in traces if CODE_PREFIX in trace]
 
         parsed_health_data, parsed_core_task_diff_data = process_exps(root=curr_loc, exps=conv_traces,
                                                                       prefix=CONV_PREFIX,
