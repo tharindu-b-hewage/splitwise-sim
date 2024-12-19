@@ -1,5 +1,6 @@
 rq_type=$1
 rq_rate=$2
+vm_rq_type=$3
 
 # Splitwise-HH
 python run.py \
@@ -7,6 +8,7 @@ python run.py \
     cluster=half_half-with-cpu \
     cluster.servers.0.count=0 \
     cluster.servers.1.count=22 \
+    cluster.servers.1.sku="$vm_rq_type" \
     start_state=splitwise-with-cpu \
     start_state.prompt.num_instances=5 \
     start_state.token.num_instances=17 \

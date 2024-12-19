@@ -12,10 +12,14 @@ types=("conv")
 #rates=("30" "40" "50" "60" "70" "80" "90" "100" "110" "120" "130" "140" "150")
 #rates=("130" "150" "170" "190" "200")
 #rates=("30")
-rates=("30" "80" "130" "180" "230" "250")
+#rates=("30" "80" "130" "180" "230" "250")
+rates=("40" "60" "80" "100")
 
 # debug
 #rates=("30")
+
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/ncadsh100v5-series?tabs=sizebasic
+vm_types=("dgx-h100-with-cpu-vm40" "dgx-h100-with-cpu-vm80" "dgx-h100-with-cpu-vm112") # Standard_NC40ads_H100_v5, Standard_NC80ads_H100_v5, full machine
 
 techniques=("linux" "zhao23" "proposed")
 
@@ -33,16 +37,22 @@ mkdir -p "$BK_TIMESTAMPED_FOLDER"
 # Move all folders in the FINAL_RESULTS_FOLDER to the new backup location
 mv "$FINAL_RESULTS_FOLDER"/* "$BK_TIMESTAMPED_FOLDER"
 
-for technique in "${techniques[@]}"; do
-  echo "technique: ""$technique"
-  sed -i '' "s/^task_allocation_algo=.*/task_allocation_algo=$technique/" cpu_configs.properties
-  cat cpu_configs.properties
-  for type in "${types[@]}"; do
-    for rate in "${rates[@]}"; do
-        echo "--- type: $type with rate: $rate"
-        sh scripts/run_splitwise_ha_cpu.sh "$type" "$rate"
+for vm in "${vm_types[@]}"; do
+  rm -rf 'cpu_core_frequencies.csv'
+  #echo "vm_type: ""$vm"
+  for technique in "${techniques[@]}"; do
+    #echo "technique: ""$technique"
+    sed -i '' "s/^task_allocation_algo=.*/task_allocation_algo=$technique/" cpu_configs.properties
+    cat cpu_configs.properties
+    for type in "${types[@]}"; do
+      for rate in "${rates[@]}"; do
+          #echo "--- type: $type with rate: $rate"
+          echo "---------> " "$type" "trace at rate: " "$rate" "for" "$vm"
+          sh scripts/run_splitwise_ha_cpu.sh "$type" "$rate" "$vm"
+        done
       done
-    done
-  mkdir "$FINAL_RESULTS_FOLDER"/"$technique"
-  mv "$TEMP_RESULTS_FOLDER"/* "$FINAL_RESULTS_FOLDER"/"$technique"
+    results="$FINAL_RESULTS_FOLDER"/"$vm"/"$technique"
+    mkdir -p "$results"
+    mv "$TEMP_RESULTS_FOLDER"/* "$results"
+  done
 done

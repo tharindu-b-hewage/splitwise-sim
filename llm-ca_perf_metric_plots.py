@@ -1,11 +1,10 @@
 import ast
-import math
 import os
+import re
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes, mark_inset
 
 CODE_PREFIX = "rr_code_"
 
@@ -83,23 +82,23 @@ def process_cpu_usage_files(cpu_data_loc, m_cpu_usage):
     }
 
 
-def process_task_data_files(cpu_data_loc, m_task_log):
+def process_task_data_files(cpu_data_loc, m_task_log, cores):
     tot_nrm_diffs = pd.DataFrame(columns=['nrm_diff'])
     for machine in m_task_log:
         m_df = pd.read_csv(os.path.join(cpu_data_loc, machine))
         m_df = pd.DataFrame(ast.literal_eval(m_df["tasks_count"].loc[0]),
                             columns=['clock', 'running_tasks', 'gpu_mem_util', 'awaken_cores'])
         m_df['nrm_diff'] = (m_df['awaken_cores'] - m_df[
-            'running_tasks']) / 112  # 112 = total cores of the servers in the cluster
+            'running_tasks']) / cores  # 112 = total cores of the servers in the cluster
 
         # expand tot_nrm_diffs
         tot_nrm_diffs = pd.concat([tot_nrm_diffs, m_df[['nrm_diff']]], ignore_index=True)
     return tot_nrm_diffs
 
 
-def process_exps(root, exps, prefix, technique):
+def process_exps(root, exps, prefix, technique, cores):
     parsed_cpu_health_data = []
-    parsed_nrm_core_to_task_diff_dst = pd.DataFrame(columns=['nrm_diff', 'technique', 'rate'])
+    parsed_nrm_core_to_task_diff_dst = pd.DataFrame(columns=['nrm_diff', 'technique', 'rate', 'cores'])
     for exp in exps:
         print(f"Processing {exp}")
         rq_rate = exp.split(prefix)[1]
@@ -110,11 +109,13 @@ def process_exps(root, exps, prefix, technique):
 
         cpu_data = process_cpu_usage_files(cpu_data_loc, m_cpu_usage)
         # cpu_data["trace"] = trace
+        cpu_data["cores"] = cores
         cpu_data["technique"] = technique
         cpu_data["rate"] = rq_rate
         parsed_cpu_health_data.append(cpu_data)
 
-        cls_nrm_core_to_task_diff_dst = process_task_data_files(cpu_data_loc, m_task_log)
+        cls_nrm_core_to_task_diff_dst = process_task_data_files(cpu_data_loc, m_task_log, cores)
+        cls_nrm_core_to_task_diff_dst["cores"] = cores
         cls_nrm_core_to_task_diff_dst['technique'] = technique
         cls_nrm_core_to_task_diff_dst['rate'] = rq_rate
         parsed_nrm_core_to_task_diff_dst = pd.concat([parsed_nrm_core_to_task_diff_dst, cls_nrm_core_to_task_diff_dst],
@@ -125,72 +126,76 @@ def process_exps(root, exps, prefix, technique):
 
 def plot_core_task_diff_data(df):
     rates_colors = {
-        '30': '#4053d3',
-        '80': '#ddb310',
-        '130': '#b51d14',
-        '180': '#00beff',
+        '40': '#4053d3',
+        '60': '#ddb310',
+        '80': '#b51d14',
+        '100': '#00beff',
         '230': '#fb49b0',
         '250': '#00b25d',
     }
 
-    rates = df["rate"].unique()
-    n_rates = len(rates)
-    techniques = df["technique"].unique()
+    vm_cores = [40, 80, 112]
+    for cores in vm_cores:
+        filt_df = df[df["cores"] == cores]
+        rates = filt_df["rate"].unique()
+        n_rates = len(rates)
+        techniques = ['linux', 'zhao23', 'proposed']
 
-    # Create subplots with one plot per rate
-    fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(5 * len(techniques), 4), sharey=True, sharex=True)
+        # Create subplots with one plot per rate
+        fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(5 * len(techniques), 4), sharey=True,
+                                 sharex=True)
 
-    if n_rates == 1:
-        axes = [axes]
+        # if n_rates == 1:
+        #     axes = [axes]
 
-    for i, tech in enumerate(techniques):
+        for i, tech in enumerate(techniques):
 
-        ax = axes[i]
-        tech_data = df[df["technique"] == tech]
+            ax = axes[i]
+            tech_data = filt_df[filt_df["technique"] == tech]
 
-        p90_vals = []
-        p1_vals = []
-        for rate in tech_data["rate"].unique():
-            rate_data = tech_data[tech_data["rate"] == rate]
-            sorted_nrm_diff = sorted(rate_data["nrm_diff"])
-            cumsum = np.cumsum(np.ones_like(sorted_nrm_diff)) / len(sorted_nrm_diff)
-            p90_val = np.percentile(sorted_nrm_diff, 90)
-            p1_val = np.percentile(sorted_nrm_diff, 1)
-            p90_vals.append(p90_val)
-            p1_vals.append(p1_val)
+            p90_vals = []
+            p1_vals = []
+            for rate in tech_data["rate"].unique():
+                rate_data = tech_data[tech_data["rate"] == rate]
+                sorted_nrm_diff = sorted(rate_data["nrm_diff"])
+                cumsum = np.cumsum(np.ones_like(sorted_nrm_diff)) / len(sorted_nrm_diff)
+                p90_val = np.percentile(sorted_nrm_diff, 90)
+                p1_val = np.percentile(sorted_nrm_diff, 1)
+                p90_vals.append(p90_val)
+                p1_vals.append(p1_val)
 
-            ax.plot(
-                sorted_nrm_diff,
-                cumsum,
-                label=tech + '@' + str(rate) + 'req/s',
-                color=rates_colors[str(rate)],
-            )
+                ax.plot(
+                    sorted_nrm_diff,
+                    cumsum,
+                    label=tech + '@' + str(rate) + 'req/s',
+                    color=rates_colors[str(rate)],
+                )
 
-        plot_p90_val = round(max(p90_vals), 3)
-        plot_p1_val = round(min(p1_vals), 3)
-        ax.vlines(x=plot_p90_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='black',
-                  label=f'max. Nrm. Idle. Cores p90 = {plot_p90_val}')
-        ax.vlines(x=plot_p1_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='blue',
-                  label=f'min. Nrm. Idle. Cores p1 = {plot_p1_val}')
+            plot_p90_val = round(max(p90_vals), 3)
+            plot_p1_val = round(min(p1_vals), 3)
+            ax.vlines(x=plot_p90_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='black',
+                      label=f'max. Nrm. Idle. Cores p90 = {plot_p90_val}')
+            ax.vlines(x=plot_p1_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='blue',
+                      label=f'min. Nrm. Idle. Cores p1 = {plot_p1_val}')
 
-        ax.set_title(f"{tech}")
+            ax.set_title(f"{tech}")
 
-        if tech != "proposed":
-            ax.set_xlim([-0.3, 1.0])
-        else:
-            ax.set_xlim([-0.3, 1.0])
+            if tech != "proposed":
+                ax.set_xlim([plot_p1_val, 1.0])
+            else:
+                ax.set_xlim([plot_p1_val, 1.0])
 
-        ax.set_xlabel(
-            "Normalized Idle CPU Cores\n(negative == cores oversubscribed)")
-        if i == 0:
-            ax.set_ylabel("Cum. Dist. of Measurements")
-        ax.legend()
-        ax.grid(True)
+            ax.set_xlabel(
+                "Normalized Idle CPU Cores\n(negative == cores oversubscribed)")
+            if i == 0:
+                ax.set_ylabel("Cum. Dist. of Measurements")
+            ax.legend()
+            ax.grid(True)
 
-    # Adjust layout
-    fig.suptitle("Idle CPU Cores Across the Cluster Machines")
-    plt.tight_layout()
-    plt.savefig("temp_results/core_availability_for_task_execution.svg")
+        # Adjust layout
+        fig.suptitle("Idle CPU Cores Across the Cluster Machines")
+        plt.tight_layout()
+        plt.savefig("temp_results/vm-cores_" + str(cores) + "_core_availability_for_task_execution.svg")
 
 
 def plot_core_health_cv(df):
@@ -199,17 +204,19 @@ def plot_core_health_cv(df):
     metrics = ["cls_m_core_health_cv_p99", "cls_m_core_health_cv_p90", "cls_m_core_health_cv_p50",
                "cls_m_core_worst_fq_p99", "cls_m_core_worst_fq_p90", "cls_m_core_worst_fq_p50"]
     metrics_lbl = ["p99", "p90", "p50", "p99", "p90", "p50"]
+    vm_cores = [40, 80, 112]
 
-    def plot_row_data(df, tech_used, metrics, metrics_lbl, filename):
+    def plot_row_data(df, tech_used, metrics, metrics_lbl, filename, cores):
+        flt_df = df[df["cores"] == cores]
         # Create subplots
         fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4 * 3, 3.1 * 2), sharex=True)
         for j, metric in enumerate(metrics):
             row_id = j // 3
             ax = axes[row_id][j % 3]
-            nrm_val = df[metric].max()
+            nrm_val = flt_df[metric].max()
 
             for technique in tech_used:
-                tech_data = df[df["technique"] == technique]
+                tech_data = flt_df[flt_df["technique"] == technique]
                 tech_data[metric] = tech_data[metric] / nrm_val
                 ax.plot(
                     tech_data['rate'],
@@ -218,8 +225,6 @@ def plot_core_health_cv(df):
                     label=technique,
                     color=IDENTITY_MAP[technique]['color']
                 )
-
-                print(f"dev: {tech_data[metric]} {technique}")
 
             ax.set_xlabel("Request Rate (req/s)")
 
@@ -233,47 +238,53 @@ def plot_core_health_cv(df):
         # Adjust layout
         fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution in Machines")
         plt.tight_layout()
-        plt.savefig("temp_results/" + filename)
+        plt.savefig("temp_results/vm-cores_" + str(cores) + "_" + filename)
 
-    plot_row_data(df, ['linux', 'zhao23'], metrics, metrics_lbl, "aging-impact_baselines.svg")
-    plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics, metrics_lbl, "aging-impact_baselines-vs-proposed.svg")
+    for cores in vm_cores:
+        plot_row_data(df, ['linux', 'zhao23'], metrics, metrics_lbl, "aging-impact_baselines.svg", cores)
+        plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics, metrics_lbl,
+                      "aging-impact_baselines-vs-proposed.svg", cores)
 
 
 ROOT_LOC = "/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/experiments"
 # ROOT_LOC = "/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/bk/2024-12-15_02-52-14"
 """At root experiments folder, create sub folder for each technique. Copy each 'rr_{code or conv}_{rate' folders to the relevant technique folder."""
 
-# dev: avoid processing data when fixing the plots
 dev_is_plot_fix = True
-
-techniques = list_dirs(root=ROOT_LOC)
-tot_parsed_health_data_conv = []
-health_data_df = None
-tot_parsed_core_task_diff_data = pd.DataFrame(columns=['nrm_diff', 'technique', 'rate'])
-
+vm_types = list_dirs(root=ROOT_LOC)
 if not os.path.isfile('health_data_df.csv'):
     dev_is_plot_fix = False
 
 if not dev_is_plot_fix:
-    for technique in techniques:
-        print(f"Processing technique: {technique}")
-        curr_loc = os.path.join(ROOT_LOC, technique)
-        traces = list_dirs(root=curr_loc)
-        conv_traces = [trace for trace in traces if CONV_PREFIX in trace]
-        # code_traces = [trace for trace in traces if CODE_PREFIX in trace]
+    tot_parsed_health_data_conv = []
+    health_data_df = None
+    tot_parsed_core_task_diff_data = pd.DataFrame(columns=['nrm_diff', 'technique', 'rate', 'cores'])
+    for vm_type in vm_types:
+        print(f"--- vm_type: {vm_type}")
+        vm_cores = int(re.search(r'vm(\d+)', vm_type).group(1))
+        techniques = list_dirs(root=os.path.join(ROOT_LOC, vm_type))
+        for technique in techniques:
+            print(f"Processing technique: {technique}")
+            curr_loc = os.path.join(ROOT_LOC, vm_type, technique)
+            traces = list_dirs(root=curr_loc)
+            conv_traces = [trace for trace in traces if CONV_PREFIX in trace]
+            # code_traces = [trace for trace in traces if CODE_PREFIX in trace]
 
-        parsed_health_data, parsed_core_task_diff_data = process_exps(root=curr_loc, exps=conv_traces,
-                                                                      prefix=CONV_PREFIX,
-                                                                      technique=technique)
+            parsed_health_data, parsed_core_task_diff_data = process_exps(root=curr_loc, exps=conv_traces,
+                                                                          prefix=CONV_PREFIX,
+                                                                          technique=technique,
+                                                                          cores=vm_cores)
 
-        tot_parsed_health_data_conv.extend(parsed_health_data)
-        tot_parsed_core_task_diff_data = pd.concat([tot_parsed_core_task_diff_data, parsed_core_task_diff_data],
-                                                   ignore_index=True)
+            tot_parsed_health_data_conv.extend(parsed_health_data)
+            tot_parsed_core_task_diff_data = pd.concat([tot_parsed_core_task_diff_data, parsed_core_task_diff_data],
+                                                       ignore_index=True)
 
     health_data_df = pd.DataFrame(tot_parsed_health_data_conv)
+    health_data_df["cores"] = health_data_df["cores"].astype(int)
     health_data_df["rate"] = health_data_df["rate"].astype(int)
     health_data_df = health_data_df.sort_values(by=['rate'])
 
+    tot_parsed_core_task_diff_data["cores"] = tot_parsed_core_task_diff_data["cores"].astype(int)
     tot_parsed_core_task_diff_data["rate"] = tot_parsed_core_task_diff_data["rate"].astype(int)
     tot_parsed_core_task_diff_data = tot_parsed_core_task_diff_data.sort_values(by=['rate'])
 
