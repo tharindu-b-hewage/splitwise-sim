@@ -184,6 +184,7 @@ def plot_core_task_diff_data(df):
 
             p90_vals = []
             p1_vals = []
+            ax.grid(True)
             for rate in tech_data["rate"].unique():
                 rate_data = tech_data[tech_data["rate"] == rate]
                 sorted_nrm_diff = sorted(rate_data["nrm_diff"])
@@ -219,7 +220,7 @@ def plot_core_task_diff_data(df):
             if i == 0:
                 ax.set_ylabel("Cum. Dist. of Measurements")
             ax.legend()
-            ax.grid(True)
+
 
         # Adjust layout
         # fig.suptitle("Idle CPU Cores Across the Cluster Machines")
@@ -250,6 +251,7 @@ def plot_core_health_cv(df):
             if not is_carbon_bars:
                 row_id = j // 3
                 ax = axes[row_id][j % 3]
+                ax.grid(True)
                 nrm_val = flt_df[metric].max()
                 for technique in tech_used:
                     tech_data = flt_df[flt_df["technique"] == technique]
@@ -269,7 +271,7 @@ def plot_core_health_cv(df):
                 else:
                     ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' \nReduction of Mean Freq.')
                 ax.legend()
-                ax.grid(True)
+
             else:
                 if j > 2:  # we only draw a single row
                     break
@@ -289,6 +291,8 @@ def plot_core_health_cv(df):
                 else:
                     tech_shift = tech_shift_3
                 width = 5
+
+                ax_carbon.grid(True)
                 for idx, technique in enumerate(tech_used):
                     tech_data = flt_df[flt_df["technique"] == technique]
                     #fq_reduction_tech = tech_data[metric.replace('_after', '_before')] - tech_data[metric].values
@@ -299,11 +303,10 @@ def plot_core_health_cv(df):
                     # emb_carbon_savings = yearly_emb_carbon_linux - yearly_emb_carbon_tech.values
 
                     ax_carbon.bar(tech_data['rate'] + tech_shift[idx] * width, yearly_emb_carbon_tech, width,
-                                  label=technique, color=IDENTITY_MAP[technique]['color'])
+                                  label=technique, color=IDENTITY_MAP[technique]['color'], edgecolor = "black")
                 ax_carbon.set_ylabel(
                     'kgCO2eq/year\n for ' + metrics_lbl[j] + ' Mean Freq.')
-                ax_carbon.legend()
-                ax_carbon.grid(True)
+                ax_carbon.legend(loc='lower right')
 
         # Adjust layout
         # fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution in Machines")
