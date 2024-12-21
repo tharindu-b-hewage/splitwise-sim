@@ -84,7 +84,7 @@ for tech in techniques:
 
                 plt.grid(True)
                 plt.tight_layout()
-                plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/" + vm_type + '_' + tech + '_' + str(rate) + ".svg")
+                plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/tasks" + vm_type + '_' + tech + '_' + str(rate) + ".svg")
             else:
                 ax = axes[i // 2][(i % 2)]
                 ax.violinplot(machine_tasks)
@@ -98,4 +98,4 @@ for tech in techniques:
             plt.grid(True)
             plt.tight_layout()
             #plt.suptitle('CPU Tasks')
-            plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/"+ vm_type+ '_' + tech + '_running_tasks.svg')
+            plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/tasks"+ vm_type+ '_' + tech + '_running_tasks.svg')

@@ -37,48 +37,77 @@ def list_files(root, prefix=None):
 
 def process_machine(m_df):
     # group by column 'id' and traverse each group
-    core_health_dst = []
-    worst_core_fq = 1.0
+    core_health_dst_after = []
+    core_health_dst_before = []
+    est_core_fq_before = 1.0
+    est_core_fq_after = 1.0
     for name, core_data in m_df.groupby('id'):
         core_data = core_data.sort_values(by='clock')
         # get the last row
+        first_row = core_data.iloc[0]
         last_row = core_data.iloc[-1]
-        final_core_health = last_row['health']  # health is frequency normalized.
-        core_health_after = final_core_health
-        core_health_dst.append(core_health_after)
+        core_fq_before = first_row['health']  # health is frequency normalized.
+        core_fq_after = last_row['health']  # health is frequency normalized.
 
-        if final_core_health < worst_core_fq:
-            worst_core_fq = final_core_health
+        core_health_dst_after.append(core_fq_after)
+        core_health_dst_before.append(core_fq_before)
+
+        if core_fq_before < est_core_fq_before:
+            est_core_fq_before = core_fq_before
+
+        if core_fq_after < est_core_fq_after:
+            est_core_fq_after = core_fq_after
 
     # calculate the coefficient of variation
-    m_core_health_cv = np.std(core_health_dst) / np.mean(core_health_dst)
-    return m_core_health_cv, worst_core_fq
+    m_core_health_cv = np.std(core_health_dst_after) / np.mean(core_health_dst_after)
+
+    est_core_fq_drop = np.mean(core_health_dst_before) - np.mean(core_health_dst_after)
+
+    return m_core_health_cv, est_core_fq_after, est_core_fq_before, est_core_fq_drop
 
 
 def process_cpu_usage_files(cpu_data_loc, m_cpu_usage):
     cls_m_core_health_cv_dst = []
-    cls_m_core_worst_fq_dst = []
+    cls_m_core_worst_fq_dst_before = []
+    cls_m_core_worst_fq_dst_after = []
+    cls_m_est_core_fq_drops = []
     for machine in m_cpu_usage:
         m_df = pd.read_csv(os.path.join(cpu_data_loc, machine))
-        m_core_health_cv, worst_core_fq = process_machine(m_df)
+        m_core_health_cv, worst_core_fq_after, worst_core_fq_before, est_core_fq_drop = process_machine(m_df)
         cls_m_core_health_cv_dst.append(m_core_health_cv)
-        cls_m_core_worst_fq_dst.append(worst_core_fq)
+        cls_m_core_worst_fq_dst_after.append(worst_core_fq_after)
+        cls_m_core_worst_fq_dst_before.append(worst_core_fq_before)
+        cls_m_est_core_fq_drops.append(est_core_fq_drop)
 
     cls_m_core_health_cv_p99 = np.percentile(cls_m_core_health_cv_dst, 99)
     cls_m_core_health_cv_p90 = np.percentile(cls_m_core_health_cv_dst, 90)
     cls_m_core_health_cv_p50 = np.percentile(cls_m_core_health_cv_dst, 50)
 
-    cls_m_core_worst_fq_p99 = np.percentile(cls_m_core_worst_fq_dst, 99)
-    cls_m_core_worst_fq_p90 = np.percentile(cls_m_core_worst_fq_dst, 90)
-    cls_m_core_worst_fq_p50 = np.percentile(cls_m_core_worst_fq_dst, 50)
+    cls_m_core_worst_fq_p99_after = np.percentile(cls_m_core_worst_fq_dst_after, 99)
+    cls_m_core_worst_fq_p90_after = np.percentile(cls_m_core_worst_fq_dst_after, 90)
+    cls_m_core_worst_fq_p50_after = np.percentile(cls_m_core_worst_fq_dst_after, 50)
+
+    cls_m_core_worst_fq_p99_before = np.percentile(cls_m_core_worst_fq_dst_before, 99)
+    cls_m_core_worst_fq_p90_before = np.percentile(cls_m_core_worst_fq_dst_before, 90)
+    cls_m_core_worst_fq_p50_before = np.percentile(cls_m_core_worst_fq_dst_before, 50)
+
+    cls_m_est_core_fq_drops_p99 = np.percentile(cls_m_est_core_fq_drops, 99)
+    cls_m_est_core_fq_drops_p90 = np.percentile(cls_m_est_core_fq_drops, 90)
+    cls_m_est_core_fq_drops_p50 = np.percentile(cls_m_est_core_fq_drops, 50)
 
     return {
         "cls_m_core_health_cv_p99": cls_m_core_health_cv_p99,
         "cls_m_core_health_cv_p90": cls_m_core_health_cv_p90,
         "cls_m_core_health_cv_p50": cls_m_core_health_cv_p50,
-        "cls_m_core_worst_fq_p99": cls_m_core_worst_fq_p99,
-        "cls_m_core_worst_fq_p90": cls_m_core_worst_fq_p90,
-        "cls_m_core_worst_fq_p50": cls_m_core_worst_fq_p50,
+        "cls_m_core_worst_fq_p99_after": cls_m_core_worst_fq_p99_after,
+        "cls_m_core_worst_fq_p90_after": cls_m_core_worst_fq_p90_after,
+        "cls_m_core_worst_fq_p50_after": cls_m_core_worst_fq_p50_after,
+        "cls_m_core_worst_fq_p99_before": cls_m_core_worst_fq_p99_before,
+        "cls_m_core_worst_fq_p90_before": cls_m_core_worst_fq_p90_before,
+        "cls_m_core_worst_fq_p50_before": cls_m_core_worst_fq_p50_before,
+        "cls_m_est_core_fq_drops_p99": cls_m_est_core_fq_drops_p99,
+        "cls_m_est_core_fq_drops_p90": cls_m_est_core_fq_drops_p90,
+        "cls_m_est_core_fq_drops_p50": cls_m_est_core_fq_drops_p50,
     }
 
 
@@ -193,57 +222,107 @@ def plot_core_task_diff_data(df):
             ax.grid(True)
 
         # Adjust layout
-        fig.suptitle("Idle CPU Cores Across the Cluster Machines")
+        # fig.suptitle("Idle CPU Cores Across the Cluster Machines")
         plt.tight_layout()
-        plt.savefig("temp_results/vm-cores_" + str(cores) + "_core_availability_for_task_execution.svg")
+        plt.savefig(
+            "temp_results/core-utilization/vm-cores_" + str(cores) + "_core_availability_for_task_execution.svg")
 
 
 def plot_core_health_cv(df):
     # Extract unique traces and metric types
     # unique_traces = df["trace"].unique()
     metrics = ["cls_m_core_health_cv_p99", "cls_m_core_health_cv_p90", "cls_m_core_health_cv_p50",
-               "cls_m_core_worst_fq_p99", "cls_m_core_worst_fq_p90", "cls_m_core_worst_fq_p50"]
+               "cls_m_est_core_fq_drops_p99", "cls_m_est_core_fq_drops_p90", "cls_m_est_core_fq_drops_p50",
+               "cls_m_core_worst_fq_p99_after", "cls_m_core_worst_fq_p90_after", "cls_m_core_worst_fq_p50_after",
+               "cls_m_core_worst_fq_p99_before", "cls_m_core_worst_fq_p90_before", "cls_m_core_worst_fq_p50_before"
+               ]
     metrics_lbl = ["p99", "p90", "p50", "p99", "p90", "p50"]
     vm_cores = [40, 80, 112]
 
-    def plot_row_data(df, tech_used, metrics, metrics_lbl, filename, cores):
+    def plot_row_data(df, tech_used, metrics, metrics_lbl, filename, cores, is_carbon_bars):
         flt_df = df[df["cores"] == cores]
         # Create subplots
-        fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4 * 3, 3.1 * 2), sharex=True)
+        if not is_carbon_bars:
+            fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4 * 3, 2.0 * 2), sharex=True)
+        else:
+            fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(4 * 3, 2.0 * 1), sharex=True)
         for j, metric in enumerate(metrics):
-            row_id = j // 3
-            ax = axes[row_id][j % 3]
-            nrm_val = flt_df[metric].max()
+            if not is_carbon_bars:
+                row_id = j // 3
+                ax = axes[row_id][j % 3]
+                nrm_val = flt_df[metric].max()
+                for technique in tech_used:
+                    tech_data = flt_df[flt_df["technique"] == technique]
+                    tech_data[metric] = tech_data[metric] / nrm_val
+                    ax.plot(
+                        tech_data['rate'],
+                        tech_data[metric],
+                        marker=IDENTITY_MAP[technique]['marker'],
+                        label=technique,
+                        color=IDENTITY_MAP[technique]['color']
+                    )
 
-            for technique in tech_used:
-                tech_data = flt_df[flt_df["technique"] == technique]
-                tech_data[metric] = tech_data[metric] / nrm_val
-                ax.plot(
-                    tech_data['rate'],
-                    tech_data[metric],
-                    marker=IDENTITY_MAP[technique]['marker'],
-                    label=technique,
-                    color=IDENTITY_MAP[technique]['color']
-                )
+                ax.set_xlabel("Request Rate (req/s)")
 
-            ax.set_xlabel("Request Rate (req/s)")
-
-            if row_id == 0:
-                ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' CV of \nCore Frequencies')
+                if row_id == 0:
+                    ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' \nCV of Freq.')
+                else:
+                    ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' \nReduction of Mean Freq.')
+                ax.legend()
+                ax.grid(True)
             else:
-                ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' of worst-case \nCore Frequency')
-            ax.legend()
-            ax.grid(True)
+                if j > 2:  # we only draw a single row
+                    break
+                # plot quantified embodied carbon. Our model estimates based on the worst_fq values.
+                # ref: Li, et al: "Towards Carbon-efficient LLM Life Cycle" paper
+                tot_cls_emb_carbon = 278.3 * 22  # kgCO2eq per server * num. of servers
+                cls_refresh_cycle = 3  # existing systems with 3 years of lifespan. In ours, linux is the baseline for this.
+
+                # fq_reduction_linux = flt_df[flt_df["technique"] == "linux"][metric.replace('_after', '_before')] - \
+                #                      flt_df[flt_df["technique"] == "linux"][metric]
+                fq_reduction_linux = flt_df[flt_df["technique"] == "linux"][metric]
+                ax_carbon = axes[j % 3]
+                tech_shift_2 = [-0.5, 0.5]
+                tech_shift_3 = [-1, 0, 1]
+                if len(tech_used) == 2:
+                    tech_shift = tech_shift_2
+                else:
+                    tech_shift = tech_shift_3
+                width = 5
+                for idx, technique in enumerate(tech_used):
+                    tech_data = flt_df[flt_df["technique"] == technique]
+                    #fq_reduction_tech = tech_data[metric.replace('_after', '_before')] - tech_data[metric].values
+                    fq_reduction_tech = tech_data[metric]
+                    ratios = fq_reduction_linux / fq_reduction_tech.values
+                    yearly_emb_carbon_linux = tot_cls_emb_carbon / cls_refresh_cycle
+                    yearly_emb_carbon_tech = yearly_emb_carbon_linux * (1 / ratios)
+                    # emb_carbon_savings = yearly_emb_carbon_linux - yearly_emb_carbon_tech.values
+
+                    ax_carbon.bar(tech_data['rate'] + tech_shift[idx] * width, yearly_emb_carbon_tech, width,
+                                  label=technique, color=IDENTITY_MAP[technique]['color'])
+                ax_carbon.set_ylabel(
+                    'kgCO2eq/year\n for ' + metrics_lbl[j] + ' Mean Freq.')
+                ax_carbon.legend()
+                ax_carbon.grid(True)
 
         # Adjust layout
-        fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution in Machines")
+        # fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution in Machines")
         plt.tight_layout()
-        plt.savefig("temp_results/vm-cores_" + str(cores) + "_" + filename)
+
+        if not is_carbon_bars:
+            plt.savefig("temp_results/aging/vm-cores_" + str(cores) + "_" + filename)
+        else:
+            plt.savefig("temp_results/carbon-savings/vm-cores_" + str(cores) + "_" + filename)
 
     for cores in vm_cores:
-        plot_row_data(df, ['linux', 'zhao23'], metrics, metrics_lbl, "aging-impact_baselines.svg", cores)
-        plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics, metrics_lbl,
-                      "aging-impact_baselines-vs-proposed.svg", cores)
+        plot_row_data(df, ['linux', 'zhao23'], metrics[:6], metrics_lbl[:6], "aging-impact_baselines.svg", cores,
+                      is_carbon_bars=False)
+        plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics[:6], metrics_lbl[:6],
+                      "aging-impact_baselines-vs-proposed.svg", cores, is_carbon_bars=False)
+        plot_row_data(df, ['linux', 'zhao23'], metrics[3:6], metrics_lbl[3:], "carbon-savings_baselines.svg", cores,
+                      is_carbon_bars=True)
+        plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics[3:6], metrics_lbl[3:],
+                      "carbon-savings_baselines-vs-proposed.svg", cores, is_carbon_bars=True)
 
 
 ROOT_LOC = "/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/experiments"
