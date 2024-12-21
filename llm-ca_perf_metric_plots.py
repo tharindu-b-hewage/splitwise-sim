@@ -171,7 +171,7 @@ def plot_core_task_diff_data(df):
         techniques = ['linux', 'zhao23', 'proposed']
 
         # Create subplots with one plot per rate
-        fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(5 * len(techniques), 4), sharey=True,
+        fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(5 * len(techniques), 3), sharey=True,
                                  sharex=True)
 
         # if n_rates == 1:
@@ -184,7 +184,7 @@ def plot_core_task_diff_data(df):
 
             p90_vals = []
             p1_vals = []
-            ax.grid(True)
+            ax.grid(True, zorder=0)
             for rate in tech_data["rate"].unique():
                 rate_data = tech_data[tech_data["rate"] == rate]
                 sorted_nrm_diff = sorted(rate_data["nrm_diff"])
@@ -204,9 +204,9 @@ def plot_core_task_diff_data(df):
             plot_p90_val = round(max(p90_vals), 3)
             plot_p1_val = round(min(p1_vals), 3)
             ax.vlines(x=plot_p90_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='black',
-                      label=f'max. Nrm. Idle. Cores p90 = {plot_p90_val}')
+                      label=f'p90 = {plot_p90_val}')
             ax.vlines(x=plot_p1_val, ymin=0.0, ymax=1.0, linewidth=0.7, linestyles='dashed', color='blue',
-                      label=f'min. Nrm. Idle. Cores p1 = {plot_p1_val}')
+                      label=f'p1 = {plot_p1_val}')
 
             ax.set_title(f"{tech}")
 
@@ -218,7 +218,7 @@ def plot_core_task_diff_data(df):
             ax.set_xlabel(
                 "Normalized Idle CPU Cores\n(negative == cores oversubscribed)")
             if i == 0:
-                ax.set_ylabel("Cum. Dist. of Measurements")
+                ax.set_ylabel("Cumulative\n Measurements")
             ax.legend()
 
 
@@ -251,7 +251,7 @@ def plot_core_health_cv(df):
             if not is_carbon_bars:
                 row_id = j // 3
                 ax = axes[row_id][j % 3]
-                ax.grid(True)
+                ax.grid(True, zorder=0)
                 nrm_val = flt_df[metric].max()
                 for technique in tech_used:
                     tech_data = flt_df[flt_df["technique"] == technique]
@@ -292,7 +292,7 @@ def plot_core_health_cv(df):
                     tech_shift = tech_shift_3
                 width = 5
 
-                ax_carbon.grid(True)
+                ax_carbon.grid(True, zorder=0)
                 for idx, technique in enumerate(tech_used):
                     tech_data = flt_df[flt_df["technique"] == technique]
                     #fq_reduction_tech = tech_data[metric.replace('_after', '_before')] - tech_data[metric].values

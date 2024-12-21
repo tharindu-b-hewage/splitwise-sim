@@ -6,9 +6,9 @@ import os
 
 ROOT_LOC = "/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/experiments/"
 
-vm_types=["dgx-h100-with-cpu-vm40", "dgx-h100-with-cpu-vm80", "dgx-h100-with-cpu-vm112"]
-#techniques=["linux", "zhao23", "proposed"]
-techniques=["proposed"]
+vm_types = ["dgx-h100-with-cpu-vm40", "dgx-h100-with-cpu-vm80", "dgx-h100-with-cpu-vm112"]
+# techniques=["linux", "zhao23", "proposed"]
+techniques = ["proposed"]
 
 is_overall = False
 
@@ -82,9 +82,11 @@ for tech in techniques:
                 ax4.set_xlabel('Machine Number')
                 ax4.set_ylabel('Distributions')
 
-                plt.grid(True)
+                plt.grid(True, zorder=0)
                 plt.tight_layout()
-                plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/tasks" + vm_type + '_' + tech + '_' + str(rate) + ".svg")
+                plt.savefig(
+                    "/Users/tharindu/workspace/splitwise-sim/temp_results/tasks" + vm_type + '_' + tech + '_' + str(
+                        rate) + ".svg")
             else:
                 ax = axes[i // 2][(i % 2)]
                 ax.violinplot(machine_tasks)
@@ -92,10 +94,11 @@ for tech in techniques:
                 ax.set_xlabel('Machine Number')
                 ax.set_ylabel(f'Task Count at Req./s: {rate}')
                 ax.set_xticks(range(1, len(machine_tasks) + 1))
-                ax.grid(True)
+                ax.grid(True, zorder=0)
 
         if not is_overall:
-            plt.grid(True)
+            plt.grid(True, zorder=0)
             plt.tight_layout()
-            #plt.suptitle('CPU Tasks')
-            plt.savefig("/Users/tharindu/workspace/splitwise-sim/temp_results/tasks"+ vm_type+ '_' + tech + '_running_tasks.svg')
+            # plt.suptitle('CPU Tasks')
+            plt.savefig(
+                "/Users/tharindu/workspace/splitwise-sim/temp_results/tasks" + vm_type + '_' + tech + '_running_tasks.svg')
