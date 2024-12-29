@@ -5,6 +5,9 @@ import re
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+import matplotlib as mpl
+
+mpl.rcParams["font.size"] = 12
 
 CODE_PREFIX = "rr_code_"
 
@@ -171,7 +174,7 @@ def plot_core_task_diff_data(df):
         techniques = ['linux', 'zhao23', 'proposed']
 
         # Create subplots with one plot per rate
-        fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(5 * len(techniques), 3), sharey=True,
+        fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(4 * len(techniques), 3), sharey=True,
                                  sharex=True)
 
         # if n_rates == 1:
@@ -197,7 +200,8 @@ def plot_core_task_diff_data(df):
                 ax.plot(
                     sorted_nrm_diff,
                     cumsum,
-                    label=tech + '@' + str(rate) + 'req/s',
+                    #label=tech + '@' + str(rate) + 'req/s',
+                    label=str(rate) + 'req/s',
                     color=rates_colors[str(rate)],
                 )
 
@@ -244,9 +248,9 @@ def plot_core_health_cv(df):
         flt_df = df[df["cores"] == cores]
         # Create subplots
         if not is_carbon_bars:
-            fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4 * 3, 2.0 * 2), sharex=True)
+            fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4.5 * 3, 3 * 2), sharex=True)
         else:
-            fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(4 * 3, 2.0 * 1), sharex=True)
+            fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(4.0 * 3, 3 * 0.82), sharex=True)
         for j, metric in enumerate(metrics):
             if not is_carbon_bars:
                 row_id = j // 3
@@ -267,9 +271,9 @@ def plot_core_health_cv(df):
                 ax.set_xlabel("Request Rate (req/s)")
 
                 if row_id == 0:
-                    ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' \nCV of Freq.')
+                    ax.set_ylabel('Norm. ' + metrics_lbl[j] + ' \nCV of Freq.')
                 else:
-                    ax.set_ylabel('Normalized ' + metrics_lbl[j] + ' \nReduction of Mean Freq.')
+                    ax.set_ylabel('Norm. ' + metrics_lbl[j] + ' Redu. \nof Mean Freq.')
                 ax.legend()
 
             else:
@@ -318,10 +322,10 @@ def plot_core_health_cv(df):
             plt.savefig("temp_results/carbon-savings/vm-cores_" + str(cores) + "_" + filename)
 
     for cores in vm_cores:
-        plot_row_data(df, ['linux', 'zhao23'], metrics[:6], metrics_lbl[:6], "aging-impact_baselines.svg", cores,
-                      is_carbon_bars=False)
-        plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics[:6], metrics_lbl[:6],
-                      "aging-impact_baselines-vs-proposed.svg", cores, is_carbon_bars=False)
+        # plot_row_data(df, ['linux', 'zhao23'], metrics[:6], metrics_lbl[:6], "aging-impact_baselines.svg", cores,
+        #               is_carbon_bars=False)
+        # plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics[:6], metrics_lbl[:6],
+        #               "aging-impact_baselines-vs-proposed.svg", cores, is_carbon_bars=False)
         plot_row_data(df, ['linux', 'zhao23'], metrics[3:6], metrics_lbl[3:], "carbon-savings_baselines.svg", cores,
                       is_carbon_bars=True)
         plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics[3:6], metrics_lbl[3:],
@@ -388,4 +392,4 @@ else:
     tot_parsed_core_task_diff_data = dev_load_data_cache('tot_parsed_core_task_diff_data.csv')
 
 plot_core_health_cv(df=health_data_df)
-plot_core_task_diff_data(df=tot_parsed_core_task_diff_data)
+#plot_core_task_diff_data(df=tot_parsed_core_task_diff_data)

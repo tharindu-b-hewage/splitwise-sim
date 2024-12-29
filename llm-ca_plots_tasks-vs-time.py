@@ -16,7 +16,7 @@ for tech in techniques:
     for vm_type in vm_types:
         fig = None
         if not is_overall:
-            fig, axes = plt.subplots(2, 2, figsize=(5 * 2, 3 * 2), sharey=True, sharex=True)
+            fig, axes = plt.subplots(2, 2, figsize=(5 * 2, 2 * 2), sharey=True, sharex=True)
 
         for i, rate in enumerate([str(rate) for rate in [40, 60, 80, 100]]):
             top_root = ROOT_LOC
