@@ -21,7 +21,7 @@ rates=("40" "60" "80" "100")
 # https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/ncadsh100v5-series?tabs=sizebasic
 vm_types=("dgx-h100-with-cpu-vm40" "dgx-h100-with-cpu-vm80" "dgx-h100-with-cpu-vm112") # Standard_NC40ads_H100_v5, Standard_NC80ads_H100_v5, full machine
 
-techniques=("linux" "zhao23" "proposed")
+techniques=("linux" "least-aged" "proposed")
 
 export HYDRA_FULL_ERROR=1
 

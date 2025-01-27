@@ -7,7 +7,7 @@ import os
 ROOT_LOC = "/Users/tharindu/Library/CloudStorage/OneDrive-TheUniversityofMelbourne/phd-student/projects/dynamic-affinity/experiments/"
 
 vm_types = ["dgx-h100-with-cpu-vm40", "dgx-h100-with-cpu-vm80", "dgx-h100-with-cpu-vm112"]
-# techniques=["linux", "zhao23", "proposed"]
+# techniques=["linux", "least-aged", "proposed"]
 techniques = ["proposed"]
 
 is_overall = False

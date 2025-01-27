@@ -1,6 +1,7 @@
 import ast
 import os
 import re
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -18,7 +19,7 @@ IDENTITY_MAP = {
         'color': '#E9002D',
         'marker': 'o'
     },
-    'zhao23': {
+    'least-aged': {
         'color': '#FFAA00',
         'marker': 'v'
     },
@@ -171,10 +172,10 @@ def plot_core_task_diff_data(df):
         filt_df = df[df["cores"] == cores]
         rates = filt_df["rate"].unique()
         n_rates = len(rates)
-        techniques = ['linux', 'zhao23', 'proposed']
+        techniques = ['linux', 'least-aged', 'proposed']
 
         # Create subplots with one plot per rate
-        fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(4 * len(techniques), 3), sharey=True,
+        fig, axes = plt.subplots(nrows=1, ncols=len(techniques), figsize=(4 * len(techniques), 2.3), sharey=True,
                                  sharex=True)
 
         # if n_rates == 1:
@@ -200,7 +201,7 @@ def plot_core_task_diff_data(df):
                 ax.plot(
                     sorted_nrm_diff,
                     cumsum,
-                    #label=tech + '@' + str(rate) + 'req/s',
+                    # label=tech + '@' + str(rate) + 'req/s',
                     label=str(rate) + 'req/s',
                     color=rates_colors[str(rate)],
                 )
@@ -219,18 +220,28 @@ def plot_core_task_diff_data(df):
             else:
                 ax.set_xlim([plot_p1_val, 1.0])
 
-            ax.set_xlabel(
-                "Normalized Idle CPU Cores\n(negative == cores oversubscribed)")
+            ax.set_xlabel("Normalized Idle CPU Cores")
             if i == 0:
                 ax.set_ylabel("Cumulative\n Measurements")
-            ax.legend()
-
+            handles, labels = ax.get_legend_handles_labels()
+            show_items = ['p90', 'p1']
+            filtered_handles = [h for h, l in zip(handles, labels) if any(sub in l for sub in show_items)]
+            filtered_labels = [l for l in labels if any(sub in l for sub in show_items)]
+            ax.legend(filtered_handles, filtered_labels)
 
         # Adjust layout
         # fig.suptitle("Idle CPU Cores Across the Cluster Machines")
-        plt.tight_layout()
+        handles, labels = ax.get_legend_handles_labels()
+        show_items = ['40req/s', '60req/s', '80req/s', '100req/s']
+        filtered_handles = [h for h, l in zip(handles, labels) if l in show_items]
+        filtered_labels = [l for l in labels if l in show_items]
+        fig.legend(filtered_handles, filtered_labels, bbox_to_anchor=(1.105, 0.75))
+        fig.tight_layout()
+        # plt.savefig("temp_results/aging/vm-cores_" + str(cores) + "_" + filename, bbox_inches='tight')
+        # plt.tight_layout()
         plt.savefig(
-            "temp_results/core-utilization/vm-cores_" + str(cores) + "_core_availability_for_task_execution.svg")
+            "temp_results/core-utilization/vm-cores_" + str(cores) + "_core_availability_for_task_execution.svg",
+            bbox_inches='tight')
 
 
 def plot_core_health_cv(df):
@@ -248,18 +259,24 @@ def plot_core_health_cv(df):
         flt_df = df[df["cores"] == cores]
         # Create subplots
         if not is_carbon_bars:
-            fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4.5 * 3, 3 * 2), sharex=True)
+            # fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(4.5 * 3, 3 * 2), sharex=True, sharey='row')
+            fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(2.5 * 3, 2.2 * 2), sharex=True, sharey='row')
         else:
-            fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(4.0 * 3, 3 * 0.82), sharex=True)
+            fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(4.0 * 3, 3 * 0.82), sharex=True, sharey=True)
         for j, metric in enumerate(metrics):
             if not is_carbon_bars:
                 row_id = j // 3
                 ax = axes[row_id][j % 3]
                 ax.grid(True, zorder=0)
                 nrm_val = flt_df[metric].max()
+                max_val = flt_df[metric].max()
+                min_val = flt_df[metric].min()
                 for technique in tech_used:
                     tech_data = flt_df[flt_df["technique"] == technique]
-                    tech_data[metric] = tech_data[metric] / nrm_val
+                    offset_to_avoid_zero_in_log = 0.000001
+                    # tech_data[metric] = tech_data[metric] / nrm_val
+                    tech_data[metric] = (nrm_val - tech_data[metric] + offset_to_avoid_zero_in_log) / nrm_val
+                    # tech_data[metric] = (tech_data[metric] - min_val) / (max_val - min_val)
                     ax.plot(
                         tech_data['rate'],
                         tech_data[metric],
@@ -270,15 +287,22 @@ def plot_core_health_cv(df):
 
                 ax.set_xlabel("Request Rate (req/s)")
 
+                # ax.set_yscale("symlog")
+                ax.set_yscale("log")
+                # ax.set_yscale('function', functions=(partial(np.power, 10.0), np.log10))
+
                 if row_id == 0:
-                    ax.set_ylabel('Norm. ' + metrics_lbl[j] + ' \nCV of Freq.')
+                    ax.set_ylabel(metrics_lbl[j] + ' Fq. CV Perf.' + '\n' + r'(1 - norm(fq. CV))')
                 else:
-                    ax.set_ylabel('Norm. ' + metrics_lbl[j] + ' Redu. \nof Mean Freq.')
-                ax.legend()
+                    ax.set_ylabel(metrics_lbl[j] + ' Mean Fq. Perf' + '\n' + r'(1 - norm(fq. drop))')
+                # ax.legend()
 
             else:
                 if j > 2:  # we only draw a single row
                     break
+
+
+
                 # plot quantified embodied carbon. Our model estimates based on the worst_fq values.
                 # ref: Li, et al: "Towards Carbon-efficient LLM Life Cycle" paper
                 tot_cls_emb_carbon = 278.3 * 22  # kgCO2eq per server * num. of servers
@@ -297,38 +321,54 @@ def plot_core_health_cv(df):
                 width = 5
 
                 ax_carbon.grid(True, zorder=0)
+                our_savings = []
+                yearly_emb_carbon_linux = tot_cls_emb_carbon / cls_refresh_cycle
                 for idx, technique in enumerate(tech_used):
                     tech_data = flt_df[flt_df["technique"] == technique]
-                    #fq_reduction_tech = tech_data[metric.replace('_after', '_before')] - tech_data[metric].values
+                    # fq_reduction_tech = tech_data[metric.replace('_after', '_before')] - tech_data[metric].values
                     fq_reduction_tech = tech_data[metric]
                     ratios = fq_reduction_linux / fq_reduction_tech.values
-                    yearly_emb_carbon_linux = tot_cls_emb_carbon / cls_refresh_cycle
                     yearly_emb_carbon_tech = yearly_emb_carbon_linux * (1 / ratios)
-                    # emb_carbon_savings = yearly_emb_carbon_linux - yearly_emb_carbon_tech.values
+                    emb_carbon_savings = yearly_emb_carbon_linux - yearly_emb_carbon_tech.values
+                    if "proposed" in technique:
+                        our_savings.extend(emb_carbon_savings)
 
                     ax_carbon.bar(tech_data['rate'] + tech_shift[idx] * width, yearly_emb_carbon_tech, width,
-                                  label=technique, color=IDENTITY_MAP[technique]['color'], edgecolor = "black")
-                ax_carbon.set_ylabel(
-                    'kgCO2eq/year\n for ' + metrics_lbl[j] + ' Mean Freq.')
-                ax_carbon.legend(loc='lower right')
+                                  label=technique, color=IDENTITY_MAP[technique]['color'], edgecolor="black")
+
+                avg_savings_proposed = sum(our_savings) / len(our_savings)
+                avg_savings_perct = avg_savings_proposed / yearly_emb_carbon_linux
+                print("VM cores: "+str(cores)+"| average carbon reduction of proposed for " + metric + " is " + str(round(100 * avg_savings_perct, 3)) + "%")
+
+                ax_carbon.set_ylabel(r'$kgCO_2eq/year$')
+                ax_carbon.set_xlabel("Request Rate (req/s)")
+                ax_carbon.set_title(metrics_lbl[j] + ' Mean Freq.')
+                # ax_carbon.legend(loc='lower right')
 
         # Adjust layout
         # fig.suptitle("Managing NBTI- and PV-Induced Uneven Frequency Distribution in Machines")
-        plt.tight_layout()
 
         if not is_carbon_bars:
-            plt.savefig("temp_results/aging/vm-cores_" + str(cores) + "_" + filename)
+            handles, labels = ax.get_legend_handles_labels()
+            fig.legend(handles, labels, bbox_to_anchor=(0.5, 1.05), ncol=len(tech_used), loc="upper center")
+            fig.tight_layout()
+            plt.minorticks_on()
+            plt.savefig("temp_results/aging/vm-cores_" + str(cores) + "_" + filename, bbox_inches='tight')
         else:
-            plt.savefig("temp_results/carbon-savings/vm-cores_" + str(cores) + "_" + filename)
+            handles, labels = ax_carbon.get_legend_handles_labels()
+            fig.legend(handles, labels, bbox_to_anchor=(0.5, 1.1), ncol=len(tech_used), loc="upper center")
+            fig.tight_layout()
+            plt.minorticks_on()
+            plt.savefig("temp_results/carbon-savings/vm-cores_" + str(cores) + "_" + filename, bbox_inches='tight')
 
     for cores in vm_cores:
-        # plot_row_data(df, ['linux', 'zhao23'], metrics[:6], metrics_lbl[:6], "aging-impact_baselines.svg", cores,
+        # plot_row_data(df, ['linux', 'least-aged'], metrics[:6], metrics_lbl[:6], "aging-impact_baselines.svg", cores,
         #               is_carbon_bars=False)
-        # plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics[:6], metrics_lbl[:6],
-        #               "aging-impact_baselines-vs-proposed.svg", cores, is_carbon_bars=False)
-        plot_row_data(df, ['linux', 'zhao23'], metrics[3:6], metrics_lbl[3:], "carbon-savings_baselines.svg", cores,
-                      is_carbon_bars=True)
-        plot_row_data(df, ['linux', 'zhao23', 'proposed'], metrics[3:6], metrics_lbl[3:],
+        plot_row_data(df, ['linux', 'least-aged', 'proposed'], metrics[:6], metrics_lbl[:6],
+                      "aging-impact_baselines-vs-proposed.svg", cores, is_carbon_bars=False)
+        # plot_row_data(df, ['linux', 'least-aged'], metrics[3:6], metrics_lbl[3:], "carbon-savings_baselines.svg", cores,
+        #               is_carbon_bars=True)
+        plot_row_data(df, ['linux', 'least-aged', 'proposed'], metrics[3:6], metrics_lbl[3:],
                       "carbon-savings_baselines-vs-proposed.svg", cores, is_carbon_bars=True)
 
 
@@ -392,4 +432,4 @@ else:
     tot_parsed_core_task_diff_data = dev_load_data_cache('tot_parsed_core_task_diff_data.csv')
 
 plot_core_health_cv(df=health_data_df)
-#plot_core_task_diff_data(df=tot_parsed_core_task_diff_data)
+plot_core_task_diff_data(df=tot_parsed_core_task_diff_data)

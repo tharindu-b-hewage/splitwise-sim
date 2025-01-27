@@ -15,14 +15,14 @@ def plot_reaction_function():
     y_pos = np.tan(0.785 * x_pos)  # for x >= 0
 
     # Create the plot
-    plt.figure(figsize=(5.5, 3))
+    plt.figure(figsize=(4.5, 2.5))
 
     # Plot each piece in its domain
     plt.plot(x_pos, y_pos,
-             label='Cores \nUnderutilized', linewidth=3
+             label='Underutilized', linewidth=3
              )
     plt.plot(x_neg, y_neg,
-             label='CPU \nOversubscribed', linewidth=3
+             label='Oversubscribed', linewidth=3
              )
 
     # Set axes limits

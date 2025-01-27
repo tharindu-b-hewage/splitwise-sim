@@ -200,7 +200,7 @@ class Processor():
         pass
 
 
-def task_schedule_zhao23(cpu_cores):
+def task_schedule_least_aged(cpu_cores):
     """Zhao et al. 2023:
     Proposes a task scheduling approach that can be enforced at the resource management level.
     We employ it at the cloud orchestration level. The idea behind the approach is, 'the OS can migrate and
@@ -507,8 +507,8 @@ class CPU(Processor):
         task_allocation_algo = CPU_CONFIGS.get("task_allocation_algo")
         if task_allocation_algo == "linux":
             assigned_core = task_schedule_linux(cpu_cores=awaken_cores)
-        elif task_allocation_algo == "zhao23":
-            assigned_core = task_schedule_zhao23(cpu_cores=awaken_cores)
+        elif task_allocation_algo == "least-aged":
+            assigned_core = task_schedule_least-aged(cpu_cores=awaken_cores)
         elif task_allocation_algo == "proposed":
             assigned_core = task_schedule_proposed(cpu_cores=awaken_cores)
         else:
