@@ -39,14 +39,6 @@ def remove_overlap(df):
     # Remove overlapping rows
     df_cleaned = df_sorted.drop(list(overlapping_indices)).reset_index(drop=True)
 
-    # Calculate statistics
-    total_rows = len(df_sorted)
-    overlapping_rows = len(overlapping_indices)
-    percentage_overlapping = (overlapping_rows / total_rows) * 100
-
-    # Output the results
-    # print(f"\nNumber of overlapping rows: {overlapping_rows}")
-    # print(f"Percentage of overlapping rows: {percentage_overlapping:.2f}%")  # Limit to 2 decimal places
     return df_cleaned
 
 

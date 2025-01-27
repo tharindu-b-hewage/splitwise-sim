@@ -61,7 +61,6 @@ class Allocator(ABC):
                                         instance_id=next(self.total_instances),
                                         application=self.application,
                                         name=instance_name,
-                                        #name=processors[0].name,
                                         tag=tag,
                                         model=model,
                                         processors=processors,
